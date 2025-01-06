@@ -1,0 +1,7 @@
+apiVersion: agents.example.com/v1
+kind: AgentType
+metadata:
+  name: test-agent
+spec:
+  agent:
+    image: nginx:latest
