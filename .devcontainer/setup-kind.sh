@@ -10,6 +10,12 @@ if [ "$(docker inspect -f '{{.State.Running}}' ${reg_name} 2>/dev/null || true)"
     registry:2
 fi
 
+# Check if the cluster already exists
+if kind get clusters | grep -q "dev"; then
+  echo "Cluster 'dev' already exists. Deleting it..."
+  kind delete cluster --name dev
+fi
+
 # Create kind cluster
 kind create cluster --config=.devcontainer/kind-config.yaml
 

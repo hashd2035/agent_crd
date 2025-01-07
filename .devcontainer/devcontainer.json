@@ -20,6 +20,9 @@
             ]
         }
     },
+    "mounts": [
+        "source=${localEnv:HOME}${localEnv:USERPROFILE}/.ssh,target=/home/vscode/.ssh,type=bind,consistency=cached"
+    ],
     "postCreateCommand": "pip install --user -r requirements-dev.txt && .devcontainer/setup-kind.sh",
     "remoteUser": "vscode",
     "runArgs": ["--privileged"]
