@@ -38,6 +38,10 @@ def create_agent(spec, name, namespace, logger, body,  **kwargs):
             logger.warning(f"Event: {reason} - {message}")
         elif event_type == 'Error':
             logger.error(f"Event: {reason} - {message}")
+    
+    settings = kopf.OperatorSettings()
+    settings.persistence.progress_storage = kopf.StatusProgressStorage(field='status.conditions')
+
 
     try:
         set_status(phase='True', reason='PodCreation', message='Starting pod creation', status_type='Created')
@@ -59,6 +63,7 @@ def create_agent(spec, name, namespace, logger, body,  **kwargs):
         # Then create the new pod
         agent_spec = spec.get('agent', {})
         image = agent_spec.get('image')
+        init_containers = agent_spec.get('initContainers', [])
         
         if not image:
             set_status(phase='False', reason='MissingImage', message='Agent image must be specified', status_type='Created')
@@ -85,6 +90,7 @@ def create_agent(spec, name, namespace, logger, body,  **kwargs):
                 }]
             },
             'spec': {
+                'initContainers': init_containers,
                 'containers': [{
                     'name': 'agent',
                     'image': image
@@ -100,7 +106,7 @@ def create_agent(spec, name, namespace, logger, body,  **kwargs):
         logger.info(f"Created pod {created_pod.metadata.name}")
         set_status(phase='True', reason='PodCreated', message=f'Pod {created_pod.metadata.name} is created', status_type='Ready')
         create_event(event_type='Normal', reason='PodCreated', message=f'Pod {created_pod.metadata.name} is created')
-           
+        
     except Exception as e:
         logger.error(f"Error creating agent pod: {str(e)}")
         set_status(phase='False', reason='PodCreationFailed', message=f"Failed to create agent pod: {str(e)}", status_type='Created')
@@ -108,7 +114,9 @@ def create_agent(spec, name, namespace, logger, body,  **kwargs):
         raise kopf.PermanentError(f"Failed to create agent pod: {str(e)}")
 
 def main():
-    kopf.configure(verbose=True, settings=kopf.OperatorSettings(persistence=kopf.StatusProgressStorage(field='status.conditions')))
+    settings = kopf.OperatorSettings()
+    settings.persistence.progress_storage = kopf.StatusProgressStorage(field='status.conditions')
+    kopf.configure(settings, verbose=True)
     kopf.run(clusterwide=True)
 
 if __name__ == "__main__":

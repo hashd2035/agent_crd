@@ -1,218 +1,22 @@
 Directory Structure:
 
-├── .devcontainer
-│   ├── Dockerfile
-│   ├── devcontainer.json
-│   ├── kind-config.yaml
-│   └── setup-kind.sh
-├── .pytest_cache
-│   └── CACHEDIR.TAG
-├── Tiltfile
-├── base
-│   ├── crd
-│   │   ├── agenttype.yaml
-│   │   └── kustomization.yaml
-│   ├── kustomization.yaml
-│   ├── operator
-│   │   ├── deployment.yaml
-│   │   └── kustomization.yaml
-│   └── rbac
-│       ├── kustomization.yaml
-│       ├── role.yaml
-│       ├── rolebinding.yaml
-│       └── serviceaccount.yaml
-├── examples
-│   └── test-agent.yaml
+├── crds
+│   ├── agenttype.yaml
+│   └── kustomization.yaml
+├── kustomization.yaml
 ├── operator
-│   ├── Dockerfile
-│   ├── main.py
-│   └── requirements.txt
-├── requirements-dev.txt
-└── tests
-    └── integration
-        ├── __init__.py
-        ├── conftest.py
-        └── test_basic_agent.py
-
-
----
-File: .devcontainer/Dockerfile
----
-
-FROM mcr.microsoft.com/devcontainers/python:3.9
-
-# Install necessary packages
-RUN apt-get update && apt-get install -y \
-    curl \
-    git \
-    make \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Tilt
-RUN curl -fsSL https://raw.githubusercontent.com/tilt-dev/tilt/master/scripts/install.sh | bash
-
-# Install kustomize
-RUN curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash && \
-    mv kustomize /usr/local/bin/
-
-# Install kind
-RUN curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-arm64 && \
-    chmod +x ./kind && \
-    mv ./kind /usr/local/bin/
-
-WORKDIR /workspaces/agent_crd
+│   ├── deployment.yaml
+│   └── kustomization.yaml
+└── rbac
+    ├── kustomization.yaml
+    ├── role.yaml
+    ├── rolebinding.yaml
+    └── serviceaccount.yaml
 
 
 
 ---
-File: .devcontainer/devcontainer.json
----
-
-{
-    "name": "Agent CRD Development",
-    "build": {
-        "dockerfile": "Dockerfile",
-        "context": "."
-    },
-    "features": {
-        "ghcr.io/devcontainers/features/docker-in-docker:2": {},
-        "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {
-            "version": "latest"
-        }
-    },
-    "customizations": {
-        "vscode": {
-            "extensions": [
-                "ms-python.python",
-                "ms-kubernetes-tools.vscode-kubernetes-tools",
-                "ms-python.vscode-pylint",
-                "ms-python.pytest-adapter"
-            ]
-        }
-    },
-    "postCreateCommand": "pip install --user -r requirements-dev.txt && .devcontainer/setup-kind.sh",
-    "remoteUser": "vscode",
-    "runArgs": ["--privileged"]
-}
-
-
-
----
-File: .devcontainer/kind-config.yaml
----
-
-kind: Cluster
-apiVersion: kind.x-k8s.io/v1alpha4
-name: dev
-containerdConfigPatches:
-- |-
-  [plugins."io.containerd.grpc.v1.cri".registry]
-    [plugins."io.containerd.grpc.v1.cri".registry.mirrors]
-      [plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5001"]
-        endpoint = ["http://kind-registry:5000"]
-    [plugins."io.containerd.grpc.v1.cri".registry.configs]
-      [plugins."io.containerd.grpc.v1.cri".registry.configs."kind-registry:5000"]
-        [plugins."io.containerd.grpc.v1.cri".registry.configs."kind-registry:5000".tls]
-          insecure_skip_verify = true
-nodes:
-- role: control-plane
-  extraPortMappings:
-  - containerPort: 80
-    hostPort: 80
-    protocol: TCP
-
-
-
----
-File: .devcontainer/setup-kind.sh
----
-
-#!/bin/bash
-set -o errexit
-
-# Create registry container unless it already exists
-reg_name='kind-registry'
-reg_port='5001'
-if [ "$(docker inspect -f '{{.State.Running}}' ${reg_name} 2>/dev/null || true)" != 'true' ]; then
-  docker run \
-    -d --restart=always -p "${reg_port}:5000" --name "${reg_name}" \
-    registry:2
-fi
-
-# Create kind cluster
-kind create cluster --config=.devcontainer/kind-config.yaml
-
-# Connect the registry to the cluster network
-docker network connect "kind" "${reg_name}" || true
-
-# Document the local registry
-kubectl apply -f - <<REGISTRY_EOF
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: local-registry-hosting
-  namespace: kube-public
-data:
-  localRegistryHosting.v1: |
-    host: "localhost:${reg_port}"
-    help: "https://kind.sigs.k8s.io/docs/user/local-registry/"
-REGISTRY_EOF
-
-# Wait for the registry to be ready
-until curl -s "http://localhost:${reg_port}/v2/_catalog" > /dev/null; do
-  echo "Waiting for registry at localhost:${reg_port} ..."
-  sleep 1
-done
-
-echo "Registry is ready!"
-
-
-
----
-File: .pytest_cache/CACHEDIR.TAG
----
-
-Signature: 8a477f597d28d172789f06886806bc55
-# This file is a cache directory tag created by pytest.
-# For information about cache directory tags, see:
-#	https://bford.info/cachedir/spec.html
-
-
-
----
-File: Tiltfile
----
-
-# Set registry
-default_registry(
-    'localhost:5001',
-    host_from_cluster='kind-registry:5000',
-    single_name='agent-operator'
-)
-
-# Allow kind cluster
-allow_k8s_contexts('kind-dev')
-
-# Load base configuration using kustomize
-k8s_yaml(kustomize('base'))
-
-# Build and deploy the operator
-docker_build(
-    'agent-operator',
-    './operator',
-    live_update=[
-        sync('./operator', '/app')
-    ]
-)
-
-# Watch for changes
-watch_file('./operator/main.py')
-watch_file('./base')
-
-
-
----
-File: base/crd/agenttype.yaml
+File: crds/agenttype.yaml
 ---
 
 apiVersion: apiextensions.k8s.io/v1
@@ -276,7 +80,7 @@ spec:
 
 
 ---
-File: base/crd/kustomization.yaml
+File: crds/kustomization.yaml
 ---
 
 # agent_crd/base/crd/kustomization.yaml
@@ -289,7 +93,7 @@ resources:
 
 
 ---
-File: base/kustomization.yaml
+File: kustomization.yaml
 ---
 
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -302,7 +106,7 @@ resources:
 
 
 ---
-File: base/operator/deployment.yaml
+File: operator/deployment.yaml
 ---
 
 apiVersion: apps/v1
@@ -332,7 +136,7 @@ spec:
 
 
 ---
-File: base/operator/kustomization.yaml
+File: operator/kustomization.yaml
 ---
 
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -343,7 +147,7 @@ resources:
 
 
 ---
-File: base/rbac/kustomization.yaml
+File: rbac/kustomization.yaml
 ---
 
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -356,7 +160,7 @@ resources:
 
 
 ---
-File: base/rbac/role.yaml
+File: rbac/role.yaml
 ---
 
 apiVersion: rbac.authorization.k8s.io/v1
@@ -380,7 +184,7 @@ rules:
 
 
 ---
-File: base/rbac/rolebinding.yaml
+File: rbac/rolebinding.yaml
 ---
 
 apiVersion: rbac.authorization.k8s.io/v1
@@ -399,214 +203,11 @@ roleRef:
 
 
 ---
-File: base/rbac/serviceaccount.yaml
+File: rbac/serviceaccount.yaml
 ---
 
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: agent-operator
-
-
-
----
-File: examples/test-agent.yaml
----
-
-apiVersion: agents.example.com/v1
-kind: AgentType
-metadata:
-  name: test-agent
-spec:
-  agent:
-    image: nginx:latest
-
-
-
----
-File: operator/Dockerfile
----
-
-FROM python:3.9-slim
-
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-
-COPY main.py .
-CMD ["python", "-u", "main.py"]
-
-
-
----
-File: operator/main.py
----
-
-import kopf
-from kubernetes import client
-from kubernetes.client.rest import ApiException
-
-@kopf.on.create('agents.example.com', 'v1', 'agenttypes')
-def create_agent(spec, name, namespace, logger, **kwargs):
-    """Create a pod when an AgentType resource is created"""
-    try:
-        # First try to delete any existing pod with the same name
-        api = client.CoreV1Api()
-        try:
-            api.delete_namespaced_pod(
-                name=f"{name}-pod",
-                namespace=namespace
-            )
-            # Wait for pod deletion to complete
-            import time
-            time.sleep(2)
-        except ApiException as e:
-            if e.status != 404:  # Ignore 404 (Not Found) errors
-                logger.warning(f"Error deleting existing pod: {e}")
-
-        # Then create the new pod
-        agent_spec = spec.get('agent', {})
-        image = agent_spec.get('image')
-        
-        if not image:
-            raise kopf.PermanentError("Agent image must be specified")
-        
-        pod = {
-            'apiVersion': 'v1',
-            'kind': 'Pod',
-            'metadata': {
-                'name': f"{name}-pod",
-                'namespace': namespace,
-                'labels': {
-                    'app': name,
-                    'managed-by': 'agent-operator'
-                },
-                'ownerReferences': [{
-                    'apiVersion': 'agents.example.com/v1',
-                    'kind': 'AgentType',
-                    'name': name,
-                    'uid': kwargs['body']['metadata']['uid'],
-                    'controller': True,
-                    'blockOwnerDeletion': True
-                }]
-            },
-            'spec': {
-                'containers': [{
-                    'name': 'agent',
-                    'image': image
-                }]
-            }
-        }
-        
-        created_pod = api.create_namespaced_pod(
-            namespace=namespace,
-            body=pod
-        )
-        
-        logger.info(f"Created pod {created_pod.metadata.name}")
-        return {'pod_name': created_pod.metadata.name}
-        
-    except Exception as e:
-        logger.error(f"Error creating agent pod: {str(e)}")
-        raise kopf.PermanentError(f"Failed to create agent pod: {str(e)}")
-
-def main():
-    kopf.configure(verbose=True)
-    kopf.run(clusterwide=True)
-
-if __name__ == "__main__":
-    main()
-
-
-
----
-File: operator/requirements.txt
----
-
-# agent_crd/requirements-dev.txt
-pytest==8.3.4
-kubernetes==23.3.0
-kopf==1.35.5
-
-
----
-File: requirements-dev.txt
----
-
-pytest==8.3.4
-kubernetes==23.3.0
-kopf==1.35.5
-
-
-
----
-File: tests/integration/__init__.py
----
-
-
-
-
----
-File: tests/integration/conftest.py
----
-
-import pytest
-from kubernetes import client, config
-
-@pytest.fixture
-def k8s_client():
-    # Load kube config
-    config.load_kube_config()
-    return client.CustomObjectsApi()
-
-
-
----
-File: tests/integration/test_basic_agent.py
----
-
-import pytest
-import kubernetes
-from kubernetes import client, config
-import time
-
-def test_create_basic_agent(k8s_client):
-    """
-    Test Scenario 1: Should create a basic agent pod
-    """
-    # Create AgentType resource
-    agent = {
-        "apiVersion": "agents.example.com/v1",
-        "kind": "AgentType",
-        "metadata": {
-            "name": "test-agent"
-        },
-        "spec": {
-            "agent": {
-                "image": "nginx:latest"
-            }
-        }
-    }
-    
-    # Apply the AgentType
-    k8s_client.create_namespaced_custom_object(
-        group="agents.example.com",
-        version="v1",
-        namespace="default",
-        plural="agenttypes",
-        body=agent
-    )
-    
-    # Wait for pod creation (simple wait)
-    time.sleep(5)
-    
-    # Verify pod exists and is running
-    v1 = client.CoreV1Api()
-    pod = v1.read_namespaced_pod(
-        name="test-agent-pod",
-        namespace="default"
-    )
-    
-    assert pod.metadata.labels['app'] == "test-agent"
-    assert pod.status.phase in ['Running', 'Pending']
 

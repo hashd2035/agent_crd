@@ -16,8 +16,10 @@ def k8s_core_client():
 
 
 @pytest.fixture
-def create_agent_resource(k8s_client):
+def create_agent_resource(k8s_client, delete_agent_resource):
     def _create_agent(name, image, namespace="default"):
+        # First try to delete the resource if it exists
+        delete_agent_resource(name=name, namespace=namespace)
         agent = {
             "apiVersion": "agents.example.com/v1",
             "kind": "AgentType",
