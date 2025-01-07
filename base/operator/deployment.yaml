@@ -16,4 +16,8 @@ spec:
       containers:
       - name: operator
         image: agent-operator
-        imagePullPolicy: IfNotPresent
+        env:
+        - name: KOPF_NAMESPACE
+          value: "*"
+        - name: KOPF_RUN_MODE
+          value: "cluster"

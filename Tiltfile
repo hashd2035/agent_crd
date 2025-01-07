@@ -19,3 +19,7 @@ docker_build(
         sync('./operator', '/app')
     ]
 )
+
+# Watch for changes
+watch_file('./operator/main.py')
+watch_file('./base')
