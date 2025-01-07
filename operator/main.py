@@ -1,13 +1,48 @@
 import kopf
 from kubernetes import client
 from kubernetes.client.rest import ApiException
+import datetime
+import logging
 
 @kopf.on.create('agents.example.com', 'v1', 'agenttypes')
-def create_agent(spec, name, namespace, logger, **kwargs):
+def create_agent(spec, name, namespace, logger, body,  **kwargs):
     """Create a pod when an AgentType resource is created"""
+    api = client.CoreV1Api()
+    custom_api = client.CustomObjectsApi()
+    
+    def set_status(phase, reason=None, message=None, status_type="Created"):
+        conditions = [{
+            'type': status_type,
+            'status': phase,
+            'lastTransitionTime': datetime.datetime.utcnow().isoformat(),
+            'reason': reason,
+            'message': message
+        }]
+        try:
+            custom_api.patch_namespaced_custom_object_status(
+                group="agents.example.com",
+                version="v1",
+                name=name,
+                namespace=namespace,
+                plural="agenttypes",
+                body={'status': {'conditions': conditions}},
+                field_manager='kopf'
+            )
+        except ApiException as e:
+            logger.error(f"Error updating status: {e}")
+    
+    def create_event(event_type, reason, message):
+        if event_type == 'Normal':
+            logger.info(f"Event: {reason} - {message}")
+        elif event_type == 'Warning':
+            logger.warning(f"Event: {reason} - {message}")
+        elif event_type == 'Error':
+            logger.error(f"Event: {reason} - {message}")
+
     try:
+        set_status(phase='True', reason='PodCreation', message='Starting pod creation', status_type='Created')
+        create_event(event_type='Normal', reason='PodCreation', message='Starting pod creation')
         # First try to delete any existing pod with the same name
-        api = client.CoreV1Api()
         try:
             api.delete_namespaced_pod(
                 name=f"{name}-pod",
@@ -19,12 +54,15 @@ def create_agent(spec, name, namespace, logger, **kwargs):
         except ApiException as e:
             if e.status != 404:  # Ignore 404 (Not Found) errors
                 logger.warning(f"Error deleting existing pod: {e}")
+                create_event(event_type='Warning', reason='PodDeletionFailed', message=f"Error deleting existing pod: {e}")
 
         # Then create the new pod
         agent_spec = spec.get('agent', {})
         image = agent_spec.get('image')
         
         if not image:
+            set_status(phase='False', reason='MissingImage', message='Agent image must be specified', status_type='Created')
+            create_event(event_type='Warning', reason='MissingImage', message='Agent image must be specified')
             raise kopf.PermanentError("Agent image must be specified")
         
         pod = {
@@ -41,7 +79,7 @@ def create_agent(spec, name, namespace, logger, **kwargs):
                     'apiVersion': 'agents.example.com/v1',
                     'kind': 'AgentType',
                     'name': name,
-                    'uid': kwargs['body']['metadata']['uid'],
+                    'uid': body['metadata']['uid'],
                     'controller': True,
                     'blockOwnerDeletion': True
                 }]
@@ -60,14 +98,17 @@ def create_agent(spec, name, namespace, logger, **kwargs):
         )
         
         logger.info(f"Created pod {created_pod.metadata.name}")
-        return {'pod_name': created_pod.metadata.name}
-        
+        set_status(phase='True', reason='PodCreated', message=f'Pod {created_pod.metadata.name} is created', status_type='Ready')
+        create_event(event_type='Normal', reason='PodCreated', message=f'Pod {created_pod.metadata.name} is created')
+           
     except Exception as e:
         logger.error(f"Error creating agent pod: {str(e)}")
+        set_status(phase='False', reason='PodCreationFailed', message=f"Failed to create agent pod: {str(e)}", status_type='Created')
+        create_event(event_type='Error', reason='PodCreationFailed', message=f"Failed to create agent pod: {str(e)}")
         raise kopf.PermanentError(f"Failed to create agent pod: {str(e)}")
 
 def main():
-    kopf.configure(verbose=True)
+    kopf.configure(verbose=True, settings=kopf.OperatorSettings(persistence=kopf.StatusProgressStorage(field='status.conditions')))
     kopf.run(clusterwide=True)
 
 if __name__ == "__main__":

@@ -1,0 +1,47 @@
+# Version control
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+env/
+.env
+
+# Poetry
+.venv/
+poetry.lock
+
+# VSCode
+.vscode/
+
+# PyCharm
+.idea/
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Tilt
+tilt-settings.json
+
+# Kustomize
+kustomize/
+
+# Docker
+Dockerfile
+docker-compose.yml
+
+# Miscellaneous
+*.log
+.DS_Store
+
+# Project-specific files (customize as needed)
+README.md
+LICENSE
