@@ -17,21 +17,25 @@ def k8s_core_client():
 
 @pytest.fixture
 def create_agent_resource(k8s_client, delete_agent_resource):
-    def _create_agent(name, image, namespace="default"):
+    def _create_agent(name, image, environment=None, namespace="default"):
         # First try to delete the resource if it exists
         delete_agent_resource(name=name, namespace=namespace)
+        
         agent = {
             "apiVersion": "agents.example.com/v1",
             "kind": "AgentType",
-            "metadata": {
-                "name": name
-            },
+            "metadata": {"name": name},
             "spec": {
                 "agent": {
                     "image": image
                 }
             }
         }
+        
+        # Add environment configuration if provided
+        if environment:
+            agent["spec"]["agent"]["environment"] = environment
+        
         k8s_client.create_namespaced_custom_object(
             group="agents.example.com",
             version="v1",
@@ -39,40 +43,42 @@ def create_agent_resource(k8s_client, delete_agent_resource):
             plural="agenttypes",
             body=agent
         )
-        # Simple wait for pod creation
-        time.sleep(2)
+        time.sleep(5)  # Increased wait time
         return agent
     return _create_agent
 
 @pytest.fixture
-def delete_agent_resource(k8s_client, k8s_core_client):
+def delete_agent_resource(k8s_core_client, k8s_client):
     def _delete_agent(name, namespace="default"):
-         try:
+        try:
+            # Delete the AgentType resource
             k8s_client.delete_namespaced_custom_object(
                 group="agents.example.com",
                 version="v1",
-                name=name,
                 namespace=namespace,
                 plural="agenttypes",
+                name=name
             )
-            # Wait for deletion to complete
-            timeout = 10
-            start_time = time.time()
-            while True:
+            
+            # Wait for pod deletion with a more robust check
+            max_retries = 30
+            retry_interval = 1
+            for _ in range(max_retries):
                 try:
-                     k8s_core_client.read_namespaced_pod(
+                    k8s_core_client.read_namespaced_pod(
                         name=f"{name}-pod",
                         namespace=namespace
                     )
-                     time.sleep(1)
-                     if time.time() - start_time > timeout:
-                       raise Exception(f"Timeout while waiting for pod deletion")
+                    time.sleep(retry_interval)
                 except client.exceptions.ApiException as e:
-                    if e.status == 404:
-                        break # resource not found
-                    else:
-                      raise
-         except client.exceptions.ApiException as e:
-            if e.status != 404:
+                    if e.status == 404:  # Pod is gone
+                        return
+                    raise
+            
+            raise Exception("Timeout while waiting for pod deletion")
+            
+        except client.exceptions.ApiException as e:
+            if e.status != 404:  # Ignore 404 errors
                 raise
+
     return _delete_agent

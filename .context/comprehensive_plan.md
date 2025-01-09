@@ -23,10 +23,10 @@
 
 #### Overview
 Progressive implementation plan showing how the architecture evolves to support:
-- Customer container/code injection
-- Tool management
+- User container/code injection
+- Tool management via sidecar
 - Memory configurations
-- LLM API integrations
+- LLM API integrations via sidecar
 - Development and Production paths
 
 #### Base Structure (Common across all steps)
@@ -85,14 +85,14 @@ Key Features:
 - Development environment
 ```
 
-##### Step 2: Customer Container Integration
-Goal: Support customer container injection and validation
+##### Step 2: User Container Integration & Environment Injection
+Goal: Support user container injection and environment setup via init container
 
 ```plaintext
 agent_crd/
 ├── base/
 │   ├── crds/
-│   │   └── agent.yaml         # Added container spec
+│   │   └── agent.yaml         # Added container spec, and environment injection
 │   └── operator/
 │       └── deployment.yaml    # Enhanced operator
 ├── config/
@@ -104,24 +104,25 @@ agent_crd/
 │           └── validation_tests.yaml
 ├── operator/
 │   ├── pkg/
-│   │   ├── container/        # (+) Container handling
-│   │   │   ├── validator.go
-│   │   │   └── injector.go
+│   │   ├── environment/        # (+) Environment handling
+│   │   │   ├── injector.go
+│   │   │   └── validator.go
 │   │   └── controller/
 │   └── tests/
-│       └── container/        # (+) Container tests
+│       └── environment/        # (+) Environment tests
 └── examples/
     └── containers/          # (+) Example containers
 
 Key Changes:
 - Container specification in CRD
-- Container validation
-- Container injection logic
-- Container-specific tests
+- Extensible init container for environment setup
+- Environment validation
+- Environment injection logic
+- Environment-specific tests
 ```
 
-##### Step 3: Tool Management
-Goal: Support tool configuration and installation
+##### Step 3: Tool Management via Sidecar
+Goal: Support tool configuration, installation, and discovery via sidecar
 
 ```plaintext
 agent_crd/
@@ -143,20 +144,22 @@ agent_crd/
 │   ├── pkg/
 │   │   ├── tools/           # (+) Tool management
 │   │   │   ├── installer.go
-│   │   │   └── validator.go
+│   │   │   ├── registry.go
+│   │   │   └── proxy.go
 │   │   └── controller/
 │   └── tests/
 │       └── tools/           # (+) Tool tests
 
 Key Changes:
 - Tool specification in CRD
-- Tool installation logic
-- Tool validation
+- Sidecar container for tool discovery & access
+- Tool installation logic in sidecar
+- Tool registry
 - Tool-specific tests
 ```
 
 ##### Step 4: Memory & API Configuration
-Goal: Add memory management and LLM API integration
+Goal: Add memory management for all containers and LLM API integration via sidecar
 
 ```plaintext
 agent_crd/
@@ -181,10 +184,10 @@ agent_crd/
 │       └── api/
 
 Key Changes:
-- Memory specification in CRD
+- Memory specification in CRD for all containers (main, init, sidecar)
 - API configuration in CRD
 - Resource management
-- API integration tests
+- API integration tests in sidecar
 ```
 
 ##### Step 5: Production Hardening
@@ -217,14 +220,16 @@ Key Changes:
 #### Key Design Decisions
 
 1. Separation of Concerns:
-   - Clear separation between operator and CRD
-   - Modular tool management
+   - Clear separation between operator, CRD, and containers.
+   - Modular tool management via sidecar
    - Configurable memory/API settings
+   - Extensible init container for environment injection
 
 2. Extensibility:
    - CRD structured for future additions
    - Modular tool definitions
    - Flexible API configurations
+   - Extensible init container
 
 3. Testing Strategy:
    - Unit tests per component
@@ -247,7 +252,6 @@ Key Changes:
 3. Test Strategy
 4. Development/Production Pipeline
 
-
 This section outlines how our architecture will evolve through each step, ensuring:
 
 1. No rearchitecting needed for new features
@@ -257,11 +261,11 @@ This section outlines how our architecture will evolve through each step, ensuri
 
 The structure supports all our requirements:
 
-- Customer container/code injection (Step 2)
-- Tool management (Step 3)
-- Memory and API configurations (Step 4)
+- User container/code injection (Step 2)
+- Tool management via sidecar (Step 3)
+- Memory and API configurations via sidecar (Step 4)
 - Production deployment (Step 5)
-
+- Extensible init container for environment injection (Step 2)
 
 
 ## 2. CRD Design & Evolution (focusing on extensibility)
@@ -337,7 +341,7 @@ spec:
     name: web-agent
 ```
 
-### Step 2: Container Integration
+### Step 2: User Container Integration & Environment Injection
 ```yaml
 spec:
   versions:
@@ -379,6 +383,35 @@ spec:
                           enum: ["python", "nodejs"]
                         version:
                           type: string
+                    environment:      # <--- ADD THIS
+                      type: object
+                      properties:
+                          variables:
+                            type: array
+                            items:
+                                type: object
+                                properties:
+                                    name:
+                                      type: string
+                                    value:
+                                      type: string
+                          sdk:
+                            type: object
+                            properties:
+                                runtime:
+                                  type: string
+                                  enum: ["python", "nodejs"]
+                                version:
+                                   type: string
+                                packages:
+                                  type: array
+                                  items:
+                                     type: string
+                          glueCode:
+                            type: object
+                            properties:
+                                source:
+                                  type: string
 
 Example Usage:
 ```yaml
@@ -393,6 +426,17 @@ spec:
     container:
       image: custom-agent:latest
       pullPolicy: Always
+    environment:
+      variables:
+        - name: API_KEY
+          value: "secret-key"
+      sdk:
+        runtime: python
+        version: "3.9"
+        packages:
+          - requests
+          - pandas
+
 
 # Code-based agent
 apiVersion: agents.example.com/v1
@@ -409,9 +453,12 @@ spec:
         path: /src
       runtime: python
       version: "3.9"
+    environment:
+      glueCode:
+         source: /shared/gluecode.py
 ```
 
-### Step 3: Tool Management
+### Step 3: Tool Management via Sidecar
 ```yaml
 spec:
   versions:
@@ -628,6 +675,7 @@ spec:
    - Generic configs using x-kubernetes-preserve-unknown-fields
    - Extensible enums for types
    - Custom tool support
+   - Extensible init container for environment injection
 
 3. Validation:
    - Strict enums where needed
@@ -683,10 +731,11 @@ This section shows the complete CRD evolution path, ensuring:
 
 Each step builds on the previous one while maintaining the ability to:
 
-- Inject customer containers/code
+- Inject user containers/code
 - Manage tools flexibly
 - Configure memory and APIs
 - Support production requirements
+- Provide extensible environment setup using init container
 
 #### Migration Strategy
 1. Use CRD versions for major changes
@@ -866,15 +915,17 @@ features/
 - Simple development overlay
 - Basic Tilt configuration
 
-##### Step 2: Agent Variants
+##### Step 2: Agent Variants & Environment Setup
 - Container base configuration
 - Code injection overlays
 - Resource management
+- Extensible init container for env setup
 
 ##### Step 3: Tool Management
 - Tool set definitions
 - Version management
 - Custom tool support
+- Sidecar implementation for tool discovery
 
 ##### Step 4: Memory & APIs
 - Memory profiles
@@ -975,8 +1026,8 @@ Test Scenarios:
    - Verify no pod is created
    ```
 
-##### Step 2: Init Container and Volume
-Purpose: Verify init container setup and volume sharing
+##### Step 2: User Container Integration & Environment Injection
+Purpose: Verify init container setup, volume sharing, and environment setup
 
 Test Scenarios:
 1. Volume Creation
@@ -995,30 +1046,27 @@ Test Scenarios:
    - Verify main container starts after init
    - Verify shared volume contains expected files
    ```
-
-##### Step 3: Wrapper Injection
-Purpose: Verify wrapper code injection and functionality
-
-Test Scenarios:
-1. Wrapper Code Injection
+3. Environment Variables Injection
    ```python
-   Test "Should inject wrapper code via init container"
-   - Create AgentType with wrapper config
-   - Verify wrapper files in shared volume
-   - Verify wrapper files are accessible to main container
+   Test "Should inject environment variables"
+   - Create AgentType with environment variable spec
+   - Verify environment variables are available in main container
    ```
-
-2. Customer Container Integration
+4. SDK Installation
    ```python
-   Test "Should run customer container with wrapper"
-   - Create AgentType with customer nginx image
-   - Verify wrapper is injected
-   - Verify nginx is running
-   - Verify wrapper integration works
+   Test "Should install SDKs"
+   - Create AgentType with SDK installation
+   - Verify SDKs are installed in shared volume
    ```
+5. Glue Code Injection
+  ```python
+  Test "Should inject glue code"
+    - Create AgentType with glue code source
+    - Verify glue code is injected in the shared volume
+  ```
 
-##### Step 4: Basic Sidecar
-Purpose: Verify sidecar container setup
+##### Step 3: Tool Management via Sidecar
+Purpose: Verify sidecar container setup and tool discovery
 
 Test Scenarios:
 1. Sidecar Creation
@@ -1036,6 +1084,12 @@ Test Scenarios:
    - Verify network connectivity between containers
    - Verify basic proxy functionality
    ```
+3. Tool Discovery
+  ```python
+  Test "Should discover tool"
+    - Create AgentType with tool requirements
+    - Verify sidecar discovers and installs requested tool
+  ```
 
 #### Test Implementation
 
@@ -1045,9 +1099,9 @@ tests/
 ├── integration/              # Main test directory
 │   ├── steps/               # Tests organized by step
 │   │   ├── step1_test.go   # Basic agent tests
-│   │   ├── step2_test.go   # Volume tests
-│   │   ├── step3_test.go   # Wrapper tests
-│   │   └── step4_test.go   # Sidecar tests
+│   │   ├── step2_test.go   # Volume & Environment tests
+│   │   ├── step3_test.go   # Sidecar & Tool tests
+│   │   └── step4_test.go   # Memory & API tests
 │   └── utils/              # Test utilities
         └── helpers.go      # Common test functions
 ```

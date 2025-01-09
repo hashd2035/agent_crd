@@ -18,10 +18,5 @@ spec:
       serviceAccountName: agent-operator
       containers:
       - name: operator
-        image: agent-operator
-        imagePullPolicy: IfNotPresent
-        env:
-        - name: KOPF_NAMESPACE
-          value: "*"
-        - name: KOPF_RUN_MODE
-          value: "cluster"
+        image: agent-operator:latest
+        imagePullPolicy: Never  # For local development 

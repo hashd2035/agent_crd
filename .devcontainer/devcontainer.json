@@ -16,7 +16,9 @@
                 "ms-python.python",
                 "ms-kubernetes-tools.vscode-kubernetes-tools",
                 "ms-python.vscode-pylint",
-                "ms-python.pytest-adapter"
+                "ms-python.pytest-adapter",
+                "task.vscode-task", 
+                "tilt-dev.tiltfile"
             ]
         }
     },

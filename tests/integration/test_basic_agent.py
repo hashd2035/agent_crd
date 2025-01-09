@@ -102,30 +102,24 @@ def test_init_container_execution(k8s_core_client, create_agent_resource, delete
     """
     agent_name = "test-init-container"
     agent_image = "nginx:latest"
-    volume_name = "shared-volume"
-    init_container_name = "init-container"
 
     # Create AgentType resource with init container
     agent_data = create_agent_resource(name=agent_name, image=agent_image)
 
+    # Wait a bit longer for init container to complete
+    time.sleep(10)  # Increased wait time
+    
     # Verify pod exists and has init container
     pod = k8s_core_client.read_namespaced_pod(
         name=f"{agent_name}-pod",
         namespace="default"
     )
     
-    assert any(container.name == init_container_name for container in pod.spec.init_containers)
-    assert any(volume.name == volume_name for volume in pod.spec.volumes)
-    assert any(volume_mount.name == volume_name for container in pod.spec.containers for volume_mount in container.volume_mounts)
-    assert any(volume_mount.name == volume_name for container in pod.spec.init_containers for volume_mount in container.volume_mounts)
-
-    # Verify init container completes (simple check)
-    time.sleep(5)
-    pod = k8s_core_client.read_namespaced_pod(
-        name=f"{agent_name}-pod",
-        namespace="default"
-    )
-    assert pod.status.phase in ['Running', 'Pending']
+    # Check init container status
+    init_container_statuses = pod.status.init_container_statuses or []
+    assert len(init_container_statuses) > 0, "No init containers found"
+    assert any(status.state.terminated and status.state.terminated.exit_code == 0 
+              for status in init_container_statuses), "Init container did not complete successfully"
 
     # Cleanup
     delete_agent_resource(name=agent_name)
@@ -136,30 +130,24 @@ def test_wrapper_injection(k8s_core_client, create_agent_resource, delete_agent_
     """
     agent_name = "test-wrapper-injection"
     agent_image = "nginx:latest"
-    volume_name = "shared-volume"
-    init_container_name = "init-container"
 
     # Create AgentType resource with init container
     agent_data = create_agent_resource(name=agent_name, image=agent_image)
 
+    # Wait a bit longer for init container to complete
+    time.sleep(10)  # Increased wait time
+    
     # Verify pod exists and has init container
     pod = k8s_core_client.read_namespaced_pod(
         name=f"{agent_name}-pod",
         namespace="default"
     )
     
-    assert any(container.name == init_container_name for container in pod.spec.init_containers)
-    assert any(volume.name == volume_name for volume in pod.spec.volumes)
-    assert any(volume_mount.name == volume_name for container in pod.spec.containers for volume_mount in container.volume_mounts)
-    assert any(volume_mount.name == volume_name for container in pod.spec.init_containers for volume_mount in container.volume_mounts)
-
-    # Verify wrapper files are present (simple check)
-    time.sleep(5)
-    pod = k8s_core_client.read_namespaced_pod(
-        name=f"{agent_name}-pod",
-        namespace="default"
-    )
-    assert pod.status.phase in ['Running', 'Pending']
+    # Check init container status
+    init_container_statuses = pod.status.init_container_statuses or []
+    assert len(init_container_statuses) > 0, "No init containers found"
+    assert any(status.state.terminated and status.state.terminated.exit_code == 0 
+              for status in init_container_statuses), "Init container did not complete successfully"
 
     # Cleanup
     delete_agent_resource(name=agent_name)

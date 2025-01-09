@@ -1,4 +1,4 @@
 # agent_crd/requirements-dev.txt
 pytest==8.3.4
-kubernetes==23.3.0
+kubernetes
 kopf==1.35.5

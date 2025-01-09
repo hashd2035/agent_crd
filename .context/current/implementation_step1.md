@@ -1,5 +1,3 @@
-Please also review what we have done in step 1. What we have achieved and what our next step (aligning and adjusting with original plan) is
-
 # Step 1 Review and Next Steps
 
 ## What We Have Achieved

@@ -15,11 +15,10 @@ spec:
     - name: v1
       served: true
       storage: true
-      subresources:
-        status: {}
       schema:
         openAPIV3Schema:
           type: object
+          required: ["spec"]
           properties:
             spec:
               type: object
@@ -34,24 +33,47 @@ spec:
                     name:
                       type: string
                       default: "agent"
+                    environment:
+                      type: object
+                      properties:
+                        variables:
+                          type: array
+                          items:
+                            type: object
+                            required: ["name", "value"]
+                            properties:
+                              name:
+                                type: string
+                              value:
+                                type: string
+                        sdk:
+                          type: object
+                          properties:
+                            runtime:
+                              type: string
+                              enum: ["python", "nodejs"]
+                            version:
+                              type: string
+                            packages:
+                              type: array
+                              items:
+                                type: string
+                        glueCode:
+                          type: object
+                          properties:
+                            source:
+                              type: string
             status:
               type: object
               properties:
-                create_agent:
-                  type: object
-                  x-kubernetes-preserve-unknown-fields: true
-                conditions:
-                  type: array
-                  items:
-                    type: object
-                    properties:
-                      type:
-                        type: string
-                      status:
-                        type: string
-                      lastTransitionTime:
-                        type: string
-                      reason:
-                        type: string
-                      message:
-                        type: string
+                phase:
+                  type: string
+                message:
+                  type: string
+      additionalPrinterColumns:
+        - name: Status
+          type: string
+          jsonPath: .status.phase
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp

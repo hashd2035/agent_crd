@@ -1,0 +1,32 @@
+vscode ➜ /workspaces/agentcrd (main) $ tree -I "__pycache__|.context"
+.
+├── Taskfile.yaml
+├── Tiltfile
+├── base
+│   ├── crd
+│   │   ├── agenttype.yaml
+│   │   └── kustomization.yaml
+│   ├── kustomization.yaml
+│   ├── operator
+│   │   ├── deployment.yaml
+│   │   └── kustomization.yaml
+│   └── rbac
+│       ├── kustomization.yaml
+│       ├── role.yaml
+│       ├── rolebinding.yaml
+│       └── serviceaccount.yaml
+├── examples
+│   └── test-agent.yaml
+├── operator
+│   ├── Dockerfile
+│   ├── main.py
+│   └── requirements.txt
+├── requirements-dev.txt
+├── tests
+│   └── integration
+│       ├── __init__.py
+│       ├── conftest.py
+│       └── test_basic_agent.py
+└── venv
+    └── include
+        └── python3.12

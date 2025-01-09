@@ -1,0 +1,65 @@
+version: '3'
+
+vars:
+  VENV_DIR: .venv
+  PYTHON: "{{.VENV_DIR}}/bin/python"
+  PIP: "{{.VENV_DIR}}/bin/pip"
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+
+  setup:
+    desc: Setup development environment
+    status:
+      - test -f "{{.VENV_DIR}}/last_setup" && test $(find "{{.VENV_DIR}}/last_setup" -mmin -60)
+    cmds:
+      - "python -m venv {{.VENV_DIR}}"
+      - "{{.PIP}} install --upgrade pip"
+      - "{{.PIP}} install -r requirements-dev.txt"
+      - "{{.PIP}} install -r operator/requirements.txt"
+      - touch "{{.VENV_DIR}}/last_setup"
+
+  test:
+    desc: Run tests
+    deps: [setup]
+    cmds:
+      - "pytest tests/integration/test_basic_agent.py -v"
+
+  kustomize:
+    desc: Build and apply kustomize manifests
+    cmds:
+      - "kubectl apply -k base/"
+
+  delete:
+    desc: Delete kustomize resources
+    cmds:
+      - "kubectl delete -k base/"
+
+  tilt:
+    desc: Start Tilt development environment
+    cmds:
+      - "tilt up"
+
+  tilt-down:
+    desc: Stop Tilt development environment
+    cmds:
+      - "tilt down"
+
+  watch-pods:
+    desc: Watch pods
+    cmds:
+      - "kubectl get pods -w"
+
+  log:
+    desc: View operator logs
+    cmds:
+      - "kubectl logs -f deployment/agent-operator -n default"
+
+  clean:
+    desc: Clean up generated files
+    cmds:
+      - rm -rf {{.VENV_DIR}}
+      - rm -rf **/__pycache__
