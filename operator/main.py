@@ -5,12 +5,11 @@ import datetime
 from datetime import timezone
 import logging
 import json
-from kubernetes.client import V1Pod, V1PodSpec, V1Container, V1Volume, V1VolumeMount
+from .handlers.create import create_agent_pod
 
 @kopf.on.create('agents.example.com', 'v1', 'agenttypes')
 def create_agent(spec, name, namespace, logger, body, **kwargs):
     """Create a pod when an AgentType resource is created"""
-    api = client.CoreV1Api()
     custom_api = client.CustomObjectsApi()
     
     logger.setLevel(logging.DEBUG)
@@ -55,90 +54,18 @@ def create_agent(spec, name, namespace, logger, body, **kwargs):
         # Add immediate debug log to track process start
         logger.info("Starting pod creation handler")
         
-        agent_spec = spec.get('agent', {})
-        image = agent_spec.get('image')
-        
-        # Debug log before init container creation
-        logger.info("Creating init containers")
-        
-        # Debug environment variables
-        env_vars = spec.get('agent', {}).get('environment', {}).get('variables', [])
-        logger.info(f"Environment variables from spec: {env_vars}")
-        logger.info(f"Full spec: {spec}")
-        logger.info(f"Agent spec: {spec.get('agent', {})}")
-        logger.info(f"Environment spec: {spec.get('agent', {}).get('environment', {})}")
-
-        # Create init containers using V1Container
-        init_containers = [
-            V1Container(
-                name='init-wrapper',
-                image='busybox:latest',
-                command=['sh', '-c'],
-                args=['echo \'console.log("wrapped");\' > /shared/wrapper.js'],
-                volume_mounts=[V1VolumeMount(
-                    name='shared-volume',
-                    mount_path='/shared'
-                )]
-            )
-        ]
-
-        # Create pod spec with all necessary configuration
-        pod = {
-            'apiVersion': 'v1',
-            'kind': 'Pod',
-            'metadata': {
-                'name': f"{name}-pod",
-                'namespace': namespace,
-                'labels': {
-                    'app': name,
-                    'managed-by': 'agent-operator'
-                },
-                'ownerReferences': [{
-                    'apiVersion': 'agents.example.com/v1',
-                    'kind': 'AgentType',
-                    'name': name,
-                    'uid': body['metadata']['uid'],
-                    'controller': True,
-                    'blockOwnerDeletion': True
-                }]
-            },
-            'spec': {
-                'volumes': [{
-                    'name': 'shared-volume',
-                    'emptyDir': {}
-                }],
-                'initContainers': [{
-                    'name': 'init-wrapper',
-                    'image': 'busybox:latest',
-                    'command': ['sh', '-c'],
-                    'args': ['echo \'console.log("wrapped");\' > /shared/wrapper.js'],
-                    'volumeMounts': [{
-                        'name': 'shared-volume',
-                        'mountPath': '/shared'
-                    }]
-                }],
-                'containers': [{
-                    'name': 'agent',
-                    'image': image,
-                    'volumeMounts': [{
-                        'name': 'shared-volume',
-                        'mountPath': '/shared'
-                    }],
-                    'env': [
-                        {
-                            'name': var['name'],
-                            'value': var['value']
-                        } for var in agent_spec.get('environment', {}).get('variables', [])
-                    ] if agent_spec.get('environment', {}).get('variables') else None
-                }]
-            }
+        # Create owner reference
+        owner_ref = {
+            'apiVersion': 'agents.example.com/v1',
+            'kind': 'AgentType',
+            'name': name,
+            'uid': body['metadata']['uid'],
+            'controller': True,
+            'blockOwnerDeletion': True
         }
         
-        # Create pod and capture response
-        created_pod = api.create_namespaced_pod(
-            namespace=namespace,
-            body=pod
-        )
+        # Create pod using handler
+        created_pod = create_agent_pod(name, namespace, spec, owner_ref)
         
         # Keep all the useful debug logs
         logger.info(f"Created pod {created_pod.metadata.name}")
