@@ -20,6 +20,36 @@ Goal: Basic agent with init container and sidecar setup
    - ✅ Shared volume mounting
    - ✅ Simple wrapper injection
 
+X. Refactoring
+
+```
+operator/
+├── __init__.py
+├── main.py                  # Main operator entry point
+├── containers/
+│   ├── __init__.py
+│   ├── agent.py            # Main agent container logic
+│   ├── init.py             # Init container logic
+│   └── sidecar.py          # Sidecar container logic
+├── utils/
+│   ├── __init__.py
+│   └── volume.py           # Shared volume management
+└── handlers/
+    ├── __init__.py
+    └── create.py           # Create handler (combines containers)
+```
+
+containers/
+- agent.py: Main agent container configuration
+- init.py: Init container setup and wrapper injection
+- sidecar.py: Sidecar container configuration
+
+utils/
+- volume.py: Shared volume configuration and management
+
+handlers/
+- create.py: Main create handler that orchestrates all containers
+
 3. Sidecar Container
    - ⏳ Basic sidecar container setup
    - ⏳ Volume sharing with main container

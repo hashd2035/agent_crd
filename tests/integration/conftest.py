@@ -17,9 +17,9 @@ def k8s_core_client():
 
 @pytest.fixture
 def create_agent_resource(k8s_client, delete_agent_resource):
-    def _create_agent(name, image, environment=None, namespace="default"):
+    def _create_agent(name, image, environment=None, sidecar=None):
         # First try to delete the resource if it exists
-        delete_agent_resource(name=name, namespace=namespace)
+        delete_agent_resource(name=name, namespace="default")
         
         agent = {
             "apiVersion": "agents.example.com/v1",
@@ -27,6 +27,7 @@ def create_agent_resource(k8s_client, delete_agent_resource):
             "metadata": {"name": name},
             "spec": {
                 "agent": {
+                    "name": "agent",
                     "image": image
                 }
             }
@@ -36,10 +37,14 @@ def create_agent_resource(k8s_client, delete_agent_resource):
         if environment:
             agent["spec"]["agent"]["environment"] = environment
         
+        # Add sidecar if specified
+        if sidecar:
+            agent["spec"]["sidecar"] = sidecar
+        
         k8s_client.create_namespaced_custom_object(
             group="agents.example.com",
             version="v1",
-            namespace=namespace,
+            namespace="default",
             plural="agenttypes",
             body=agent
         )
