@@ -1,0 +1,12 @@
+apiVersion: agents.example.com/v1
+kind: AgentType
+metadata:
+  name: test-agent
+spec:
+  agent:
+    image: nginx:latest # Back to valid image
+  sidecar:
+    image: busybox:latest
+    name: tool-manager
+    args: ["-c", "echo 'sidecar running' && sleep infinity"]
+    command: ["sh"]

@@ -1,0 +1,1718 @@
+Directory Structure:
+
+├── .context
+│   ├── comprehensive_plan.md
+│   ├── current
+│   │   ├── implementation_step1.md
+│   │   ├── phase.md
+│   │   ├── project_contents.txt
+│   │   └── status.md
+│   ├── functinal_requirements.md
+│   ├── implementation_details.md
+│   ├── kopf
+│   │   ├── index.md
+│   │   ├── kopf_error_handling.md
+│   │   ├── kopf_handlers.md
+│   │   ├── kopf_operator_handling_configuration.md
+│   │   ├── kopf_operator_handling_startup.md
+│   │   ├── kopf_recipes_idempotence
+│   │   ├── kopf_recipes_reconciliation.md
+│   │   ├── kopf_resource_specification.md
+│   │   ├── kopf_results_delivery.md
+│   │   └── kopf_toolkit_events.md
+│   ├── response_guide.md
+│   ├── system_message.md
+│   ├── test_plan.md
+│   └── troubleshooting_logs
+│       ├── create_agent.pod_name_issue.md
+│       ├── json_serialization_datetime.md
+│       └── troubleshooting_log.md
+├── .devcontainer
+│   ├── Dockerfile
+│   ├── devcontainer.json
+│   ├── kind-config.yaml
+│   └── setup-kind.sh
+├── .dockerignore
+├── .pytest_cache
+│   └── CACHEDIR.TAG
+├── README.md
+├── Taskfile.yaml
+├── Tiltfile
+├── base
+│   ├── crd
+│   │   ├── agenttype.yaml
+│   │   └── kustomization.yaml
+│   ├── kustomization.yaml
+│   ├── operator
+│   │   ├── deployment.yaml
+│   │   └── kustomization.yaml
+│   └── rbac
+│       ├── kustomization.yaml
+│       ├── role.yaml
+│       ├── rolebinding.yaml
+│       └── serviceaccount.yaml
+├── examples
+│   └── test-agent.yaml
+├── k8s
+│   ├── operator.yaml
+│   └── rbac.yaml
+├── operator
+│   ├── containers
+│   │   ├── __init__.py
+│   │   ├── agent.py
+│   │   ├── init.py
+│   │   └── sidecar.py
+│   ├── handlers
+│   │   ├── __init__.py
+│   │   └── create.py
+│   ├── main.py
+│   ├── requirements.txt
+│   └── utils
+│       ├── __init__.py
+│       └── volume.py
+├── requirements-dev.txt
+└── tests
+    └── integration
+        ├── __init__.py
+        ├── conftest.py
+        ├── test_basic_agent.py
+        ├── test_environment.py
+        └── test_sidecar_container.py
+
+
+---
+File: .devcontainer/Dockerfile
+---
+
+FROM mcr.microsoft.com/devcontainers/python:3.9
+
+# Install necessary packages
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    make \
+    && rm -rf /var/lib/apt/lists/*
+
+
+# Install Go-Task (https://taskfile.dev/#/installation)
+RUN curl -fsSL https://github.com/go-task/task/releases/download/v3.34.1/task_linux_amd64.tar.gz -o task.tar.gz; \
+    tar -xf task.tar.gz -C /usr/local/bin task && \
+    rm task.tar.gz
+
+ENV PATH=/home/vscode/.local/bin:$PATH
+
+# Install Tilt
+RUN curl -fsSL https://raw.githubusercontent.com/tilt-dev/tilt/master/scripts/install.sh | bash
+
+# Install kustomize
+RUN curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash && \
+    mv kustomize /usr/local/bin/
+
+# Install kind
+RUN curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-arm64 && \
+    chmod +x ./kind && \
+    mv ./kind /usr/local/bin/
+
+WORKDIR /workspaces/agent_crd
+
+
+
+---
+File: .devcontainer/devcontainer.json
+---
+
+{
+    "name": "Agent CRD Development",
+    "build": {
+        "dockerfile": "Dockerfile",
+        "context": "."
+    },
+    "features": {
+        "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+        "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {
+            "version": "latest"
+        }
+    },
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "ms-kubernetes-tools.vscode-kubernetes-tools",
+                "ms-python.vscode-pylint",
+                "ms-python.pytest-adapter",
+                "task.vscode-task", 
+                "tilt-dev.tiltfile"
+            ]
+        }
+    },
+    "mounts": [
+        "source=${localEnv:HOME}${localEnv:USERPROFILE}/.ssh,target=/home/vscode/.ssh,type=bind,consistency=cached"
+    ],
+    "postCreateCommand": "pip install --user -r requirements-dev.txt && .devcontainer/setup-kind.sh",
+    "remoteUser": "vscode",
+    "runArgs": ["--privileged"]
+}
+
+
+
+---
+File: .devcontainer/kind-config.yaml
+---
+
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: dev
+containerdConfigPatches:
+- |-
+  [plugins."io.containerd.grpc.v1.cri".registry]
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors]
+      [plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5001"]
+        endpoint = ["http://kind-registry:5000"]
+    [plugins."io.containerd.grpc.v1.cri".registry.configs]
+      [plugins."io.containerd.grpc.v1.cri".registry.configs."kind-registry:5000"]
+        [plugins."io.containerd.grpc.v1.cri".registry.configs."kind-registry:5000".tls]
+          insecure_skip_verify = true
+nodes:
+- role: control-plane
+  extraPortMappings:
+  - containerPort: 80
+    hostPort: 80
+    protocol: TCP
+
+
+
+---
+File: .devcontainer/setup-kind.sh
+---
+
+#!/bin/bash
+set -o errexit
+
+# Create registry container unless it already exists
+reg_name='kind-registry'
+reg_port='5001'
+if [ "$(docker inspect -f '{{.State.Running}}' ${reg_name} 2>/dev/null || true)" != 'true' ]; then
+  docker run \
+    -d --restart=always -p "${reg_port}:5000" --name "${reg_name}" \
+    registry:2
+fi
+
+# Check if the cluster already exists
+if kind get clusters | grep -q "dev"; then
+  echo "Cluster 'dev' already exists. Deleting it..."
+  kind delete cluster --name dev
+fi
+
+# Create kind cluster
+kind create cluster --config=.devcontainer/kind-config.yaml
+
+# Connect the registry to the cluster network
+docker network connect "kind" "${reg_name}" || true
+
+# Document the local registry
+kubectl apply -f - <<REGISTRY_EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: local-registry-hosting
+  namespace: kube-public
+data:
+  localRegistryHosting.v1: |
+    host: "localhost:${reg_port}"
+    help: "https://kind.sigs.k8s.io/docs/user/local-registry/"
+REGISTRY_EOF
+
+# Wait for the registry to be ready
+until curl -s "http://localhost:${reg_port}/v2/_catalog" > /dev/null; do
+  echo "Waiting for registry at localhost:${reg_port} ..."
+  sleep 1
+done
+
+echo "Registry is ready!"
+
+
+
+---
+File: .dockerignore
+---
+
+# Version control
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+env/
+.env
+
+# Poetry
+.venv/
+poetry.lock
+
+# VSCode
+.vscode/
+
+# PyCharm
+.idea/
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Tilt
+tilt-settings.json
+
+# Kustomize
+kustomize/
+
+# Docker
+Dockerfile
+docker-compose.yml
+
+# Miscellaneous
+*.log
+.DS_Store
+
+# Project-specific files (customize as needed)
+README.md
+LICENSE
+
+
+
+---
+File: .pytest_cache/CACHEDIR.TAG
+---
+
+Signature: 8a477f597d28d172789f06886806bc55
+# This file is a cache directory tag created by pytest.
+# For information about cache directory tags, see:
+#	https://bford.info/cachedir/spec.html
+
+
+
+---
+File: README.md
+---
+
+
+
+
+---
+File: Taskfile.yaml
+---
+
+version: '3'
+
+vars:
+  VENV_DIR: .venv
+  PYTHON: "{{.VENV_DIR}}/bin/python"
+  PIP: "{{.VENV_DIR}}/bin/pip"
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+
+  setup:
+    desc: Setup development environment
+    status:
+      - test -f "{{.VENV_DIR}}/last_setup" && test $(find "{{.VENV_DIR}}/last_setup" -mmin -60)
+    cmds:
+      - "python -m venv {{.VENV_DIR}}"
+      - "{{.PIP}} install --upgrade pip"
+      - "{{.PIP}} install -r requirements-dev.txt"
+      - "{{.PIP}} install -r operator/requirements.txt"
+      - touch "{{.VENV_DIR}}/last_setup"
+
+  test:
+    desc: Run tests
+    deps: [setup]
+    cmds:
+      - "pytest tests/integration/test_basic_agent.py -v"
+
+  kustomize:
+    desc: Build and apply kustomize manifests
+    cmds:
+      - "kubectl apply -k base/"
+
+  delete:
+    desc: Delete kustomize resources
+    cmds:
+      - "kubectl delete -k base/"
+
+  tilt:
+    desc: Start Tilt development environment
+    cmds:
+      - "tilt up"
+
+  tilt-down:
+    desc: Stop Tilt development environment
+    cmds:
+      - "tilt down"
+
+  watch-pods:
+    desc: Watch pods
+    cmds:
+      - "kubectl get pods -w"
+
+  log:
+    desc: View operator logs
+    cmds:
+      - "kubectl logs -f deployment/agent-operator -n default"
+
+  clean:
+    desc: Clean up generated files
+    cmds:
+      - rm -rf {{.VENV_DIR}}
+      - rm -rf **/__pycache__
+
+
+---
+File: Tiltfile
+---
+
+# Set registry
+default_registry(
+    'localhost:5001',
+    host_from_cluster='kind-registry:5000',
+    single_name='agent-operator'
+)
+
+# Allow kind cluster
+allow_k8s_contexts('kind-dev')
+
+# Load base configuration using kustomize
+k8s_yaml(kustomize('base'))
+
+# Build and deploy the operator
+docker_build(
+    'agent-operator',
+    './operator',
+    live_update=[
+        sync('./operator', '/app')
+    ]
+)
+
+# Watch for changes
+watch_file('./operator/main.py')
+watch_file('./base')
+
+
+
+---
+File: base/crd/agenttype.yaml
+---
+
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: agenttypes.agents.example.com
+spec:
+  group: agents.example.com
+  names:
+    kind: AgentType
+    plural: agenttypes
+    singular: agenttype
+    shortNames:
+      - at
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: ["spec"]
+          properties:
+            spec:
+              type: object
+              required: ["agent"]
+              properties:
+                agent:
+                  type: object
+                  required: ["image"]
+                  properties:
+                    image:
+                      type: string
+                      description: "Docker image for the main agent container"
+                    name:
+                      type: string
+                      default: "agent"
+                      description: "Name of the main agent container"
+                    environment:
+                      type: object
+                      description: "Environment configuration for the agent"
+                      properties:
+                        variables:
+                          type: array
+                          description: "List of environment variables"
+                          items:
+                            type: object
+                            required: ["name", "value"]
+                            properties:
+                              name:
+                                type: string
+                                description: "Name of the environment variable"
+                              value:
+                                type: string
+                                description: "Value of the environment variable"
+                sidecar:
+                  type: object
+                  description: "Configuration for the sidecar container"
+                  properties:
+                    name:
+                      type: string
+                      default: "tool-manager"
+                      description: "Name of the sidecar container"
+                    image:
+                      type: string
+                      description: "Docker image for the sidecar container"
+                    command:
+                      type: array
+                      description: "Command to run in the sidecar container"
+                      items:
+                        type: string
+                    args:
+                      type: array
+                      description: "Arguments for the sidecar command"
+                      items:
+                        type: string
+                    resources:
+                      type: object
+                      description: "Resource requirements for the sidecar"
+                      properties:
+                        requests:
+                          type: object
+                          properties:
+                            cpu:
+                              type: string
+                              pattern: '^([0-9]+m?|[0-9]+\\.[0-9]+)$'
+                            memory:
+                              type: string
+                              pattern: '^[0-9]+(Gi|Mi|Ki|G|M|K)?$'
+                        limits:
+                          type: object
+                          properties:
+                            cpu:
+                              type: string
+                              pattern: '^([0-9]+m?|[0-9]+\\.[0-9]+)$'
+                            memory:
+                              type: string
+                              pattern: '^[0-9]+(Gi|Mi|Ki|G|M|K)?$'
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  description: "Current phase of the agent"
+                message:
+                  type: string
+                  description: "Detailed status message"
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required: ["type", "status"]
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+      additionalPrinterColumns:
+        - name: Status
+          type: string
+          jsonPath: .status.phase
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+
+
+---
+File: base/crd/kustomization.yaml
+---
+
+# agent_crd/base/crd/kustomization.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- agenttype.yaml
+
+
+
+
+---
+File: base/kustomization.yaml
+---
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- crd/
+- rbac/
+- operator/
+
+
+
+---
+File: base/operator/deployment.yaml
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-operator
+  namespace: default
+  labels:
+    app: agent-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-operator
+  template:
+    metadata:
+      labels:
+        app: agent-operator
+    spec:
+      serviceAccountName: agent-operator
+      containers:
+      - name: operator
+        image: agent-operator
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: KOPF_NAMESPACE
+          value: "*"
+        - name: KOPF_RUN_MODE
+          value: "cluster"
+
+
+
+---
+File: base/operator/kustomization.yaml
+---
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- deployment.yaml
+
+
+
+---
+File: base/rbac/kustomization.yaml
+---
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- serviceaccount.yaml
+- role.yaml
+- rolebinding.yaml
+
+
+
+---
+File: base/rbac/role.yaml
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agent-operator
+rules:
+- apiGroups: ["agents.example.com"]
+  resources: ["agenttypes", "agenttypes/status"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["pods", "events", "configmaps"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["apiextensions.k8s.io"]
+  resources: ["customresourcedefinitions"]
+  verbs: ["get", "list", "watch"]
+
+
+
+---
+File: base/rbac/rolebinding.yaml
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: agent-operator
+subjects:
+- kind: ServiceAccount
+  name: agent-operator
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: agent-operator
+  apiGroup: rbac.authorization.k8s.io
+
+
+
+---
+File: base/rbac/serviceaccount.yaml
+---
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-operator
+
+
+
+---
+File: examples/test-agent.yaml
+---
+
+apiVersion: agents.example.com/v1
+kind: AgentType
+metadata:
+  name: test-agent
+spec:
+  agent:
+    image: nginx:latest
+
+
+
+---
+File: k8s/operator.yaml
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-operator
+  namespace: default
+  labels:
+    app: agent-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-operator
+  template:
+    metadata:
+      labels:
+        app: agent-operator
+    spec:
+      serviceAccountName: agent-operator
+      containers:
+      - name: operator
+        image: agent-operator:latest
+        imagePullPolicy: Never  # For local development 
+
+
+---
+File: k8s/rbac.yaml
+---
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-operator
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agent-operator
+  namespace: default
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+- apiGroups: ["agents.example.com"]
+  resources: ["agenttypes"]
+  verbs: ["get", "list", "patch", "update", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agent-operator
+  namespace: default
+subjects:
+- kind: ServiceAccount
+  name: agent-operator
+  namespace: default
+roleRef:
+  kind: Role
+  name: agent-operator
+  apiGroup: rbac.authorization.k8s.io 
+
+
+---
+File: operator/containers/__init__.py
+---
+
+
+
+
+---
+File: operator/containers/agent.py
+---
+
+from ..utils.volume import get_volume_mounts
+
+def create_agent_container(image, env_vars=None):
+    """Create the main agent container configuration"""
+    container = {
+        'name': 'agent',
+        'image': image,
+        'volumeMounts': get_volume_mounts()
+    }
+    
+    if env_vars:
+        container['env'] = [
+            {
+                'name': var['name'],
+                'value': var['value']
+            } for var in env_vars
+        ]
+    
+    return container
+
+
+
+---
+File: operator/containers/init.py
+---
+
+from ..utils.volume import get_volume_mounts
+
+def create_init_container():
+    """Create the init container configuration"""
+    return {
+        'name': 'init-wrapper',
+        'image': 'busybox:latest',
+        'command': ['sh', '-c'],
+        'args': ['echo \'console.log("wrapped");\' > /shared/wrapper.js'],
+        'volumeMounts': get_volume_mounts()
+    }
+
+
+
+---
+File: operator/containers/sidecar.py
+---
+
+from typing import Dict, Optional, List
+from ..utils.volume import get_volume_mounts
+
+def create_sidecar_container(
+    image: str,
+    name: str = "tool-manager",
+    command: Optional[List[str]] = None,
+    args: Optional[List[str]] = None,
+    resources: Optional[Dict] = None,
+    env_vars: Optional[List[Dict]] = None
+) -> Dict:
+    """Create a sidecar container configuration.
+    
+    Args:
+        image: Docker image for the sidecar container
+        name: Name of the sidecar container (default: tool-manager)
+        command: Optional command to run in the container
+        args: Optional arguments for the command
+        resources: Optional resource requirements (CPU/memory requests/limits)
+        env_vars: Optional list of environment variables
+        
+    Returns:
+        Dict containing the sidecar container configuration
+    """
+    container = {
+        'name': name,
+        'image': image,
+        'volumeMounts': get_volume_mounts()
+    }
+
+    # Add optional command and args if provided
+    if command:
+        container['command'] = command
+    if args:
+        container['args'] = args
+
+    # Add resource requirements if specified
+    if resources:
+        container['resources'] = resources
+
+    # Add environment variables if specified
+    if env_vars:
+        container['env'] = [
+            {
+                'name': var['name'],
+                'value': var['value']
+            } for var in env_vars
+        ]
+
+    return container
+
+def validate_sidecar_spec(spec: Dict) -> None:
+    """Validate the sidecar specification.
+    
+    Args:
+        spec: Sidecar specification dictionary from the CRD
+        
+    Raises:
+        ValueError: If required fields are missing or invalid
+    """
+    if not spec.get('image'):
+        raise ValueError("Sidecar container must specify an image")
+
+    # Validate resource specifications if present
+    if 'resources' in spec:
+        resources = spec['resources']
+        if not isinstance(resources, dict):
+            raise ValueError("Resources must be a dictionary")
+        
+        for section in ['requests', 'limits']:
+            if section in resources:
+                if not isinstance(resources[section], dict):
+                    raise ValueError(f"Resource {section} must be a dictionary")
+                
+                for resource_type in resources[section]:
+                    if resource_type not in ['cpu', 'memory']:
+                        raise ValueError(f"Invalid resource type: {resource_type}")
+
+def create_sidecar_from_spec(spec: Dict) -> Dict:
+    """Create a sidecar container configuration from a CRD spec.
+    
+    Args:
+        spec: Sidecar specification from the CRD
+        
+    Returns:
+        Dict containing the sidecar container configuration
+        
+    Raises:
+        ValueError: If the specification is invalid
+    """
+    if not isinstance(spec, dict):
+        raise ValueError("Sidecar spec must be a dictionary")
+    
+    if 'image' not in spec:
+        raise ValueError("Sidecar spec must include an image")
+        
+    container = {
+        'name': spec.get('name', 'tool-manager'),
+        'image': spec['image'],
+        'volumeMounts': get_volume_mounts()
+    }
+    
+    # Add command if specified
+    if 'command' in spec:
+        container['command'] = spec['command']
+        
+    # Add args if specified
+    if 'args' in spec:
+        container['args'] = spec['args']
+        
+    # Add resources if specified
+    if 'resources' in spec:
+        container['resources'] = spec['resources']
+        
+    # Add environment variables if specified
+    if 'environment' in spec and 'variables' in spec['environment']:
+        container['env'] = [
+            {'name': var['name'], 'value': var['value']}
+            for var in spec['environment']['variables']
+        ]
+        
+    return container
+
+
+---
+File: operator/handlers/__init__.py
+---
+
+
+
+
+---
+File: operator/handlers/create.py
+---
+
+
+
+
+---
+File: operator/main.py
+---
+
+import kopf
+from kubernetes import client
+from kubernetes.client.rest import ApiException
+import datetime
+from datetime import timezone
+import logging
+import json
+from kubernetes.client import V1Pod, V1PodSpec, V1Container, V1Volume, V1VolumeMount
+from .utils.volume import get_volume_mounts
+
+@kopf.on.create('agents.example.com', 'v1', 'agenttypes')
+def create_agent(spec, name, namespace, logger, body, **kwargs):
+    """Create a pod when an AgentType resource is created"""
+    api = client.CoreV1Api()
+    custom_api = client.CustomObjectsApi()
+    
+    logger.setLevel(logging.DEBUG)
+    
+    try:
+        # Log the full incoming resource
+        logger.info(f"Received AgentType resource creation request:")
+        logger.info(f"Name: {name}")
+        logger.info(f"Namespace: {namespace}")
+        logger.info(f"Full body: {json.dumps(body, indent=2)}")
+        logger.info(f"Spec content: {json.dumps(spec, indent=2)}")
+
+        # Extract specifications
+        agent_spec = spec.get('agent', {})
+        sidecar_spec = spec.get('sidecar')
+        
+        logger.info(f"Extracted agent spec: {json.dumps(agent_spec, indent=2)}")
+        logger.info(f"Extracted sidecar spec: {json.dumps(sidecar_spec, indent=2)}")
+        
+        # Create containers list starting with main agent
+        containers = [{
+            'name': 'agent',
+            'image': agent_spec['image'],
+            'volumeMounts': get_volume_mounts()
+        }]
+        
+        logger.info("Created main agent container configuration")
+        
+        # Add sidecar if specified
+        if sidecar_spec:
+            logger.info(f"Processing sidecar configuration: {json.dumps(sidecar_spec, indent=2)}")
+            
+            sidecar = {
+                'name': sidecar_spec.get('name', 'tool-manager'),
+                'image': sidecar_spec['image'],
+                'volumeMounts': get_volume_mounts()
+            }
+            
+            # Add optional sidecar configurations
+            if 'command' in sidecar_spec:
+                sidecar['command'] = sidecar_spec['command']
+                logger.debug(f"Added sidecar command: {sidecar_spec['command']}")
+                
+            if 'args' in sidecar_spec:
+                sidecar['args'] = sidecar_spec['args']
+                logger.debug(f"Added sidecar args: {sidecar_spec['args']}")
+                
+            if 'resources' in sidecar_spec:
+                sidecar['resources'] = sidecar_spec['resources']
+                logger.debug(f"Added sidecar resources: {sidecar_spec['resources']}")
+            
+            containers.append(sidecar)
+            logger.info(f"Added sidecar container: {json.dumps(sidecar, indent=2)}")
+        
+        # Create pod configuration
+        pod = {
+            'apiVersion': 'v1',
+            'kind': 'Pod',
+            'metadata': {
+                'name': f"{name}-pod",
+                'namespace': namespace,
+                'labels': {
+                    'app': name,
+                    'managed-by': 'agent-operator'
+                },
+                'ownerReferences': [{
+                    'apiVersion': 'agents.example.com/v1',
+                    'kind': 'AgentType',
+                    'name': name,
+                    'uid': body['metadata']['uid'],
+                    'controller': True,
+                    'blockOwnerDeletion': True
+                }]
+            },
+            'spec': {
+                'volumes': [{
+                    'name': 'shared-volume',
+                    'emptyDir': {}
+                }],
+                'initContainers': [{
+                    'name': 'init-wrapper',
+                    'image': 'busybox:latest',
+                    'command': ['sh', '-c'],
+                    'args': ['echo \'console.log("wrapped");\' > /shared/wrapper.js'],
+                    'volumeMounts': get_volume_mounts()
+                }],
+                'containers': containers
+            }
+        }
+        
+        logger.info(f"Created pod configuration: {json.dumps(pod, indent=2)}")
+        
+        # Create pod
+        created_pod = api.create_namespaced_pod(
+            namespace=namespace,
+            body=pod
+        )
+        
+        logger.info(f"Successfully created pod {created_pod.metadata.name}")
+        logger.debug("Pod details:")
+        logger.debug(f"  Name: {created_pod.metadata.name}")
+        logger.debug(f"  Namespace: {created_pod.metadata.namespace}")
+        logger.debug(f"  Phase: {created_pod.status.phase if created_pod.status else 'Unknown'}")
+        logger.debug(f"  Containers: {[c.name for c in created_pod.spec.containers]}")
+        
+        return {
+            'pod_name': created_pod.metadata.name,
+            'namespace': created_pod.metadata.namespace,
+            'uid': created_pod.metadata.uid,
+            'status': 'created'
+        }
+
+    except Exception as e:
+        logger.error(f"Error creating agent pod: {str(e)}")
+        logger.error(f"Error details:", exc_info=True)
+        raise kopf.PermanentError(f"Failed to create agent pod: {str(e)}")
+
+
+def main():
+    settings = kopf.OperatorSettings()
+    settings.persistence.progress_storage = kopf.StatusProgressStorage(field='status.conditions')
+    kopf.configure(settings, verbose=True)
+    kopf.run(clusterwide=True)
+
+if __name__ == "__main__":
+    main()
+
+
+
+---
+File: operator/requirements.txt
+---
+
+# agent_crd/requirements-dev.txt
+pytest==8.3.4
+kubernetes
+kopf==1.35.5
+
+
+---
+File: operator/utils/__init__.py
+---
+
+
+
+
+---
+File: operator/utils/volume.py
+---
+
+from kubernetes.client import V1Volume, V1VolumeMount
+
+def create_shared_volume(name="shared-volume"):
+    """Create a shared volume configuration"""
+    return V1Volume(
+        name=name,
+        empty_dir={}
+    )
+
+def create_volume_mount(volume_name="shared-volume", mount_path="/shared"):
+    """Create a volume mount configuration"""
+    return V1VolumeMount(
+        name=volume_name,
+        mount_path=mount_path
+    )
+
+def get_volume_config():
+    """Get the volume configuration for the pod"""
+    return [{
+        'name': 'shared-volume',
+        'emptyDir': {}
+    }]
+
+def get_volume_mounts():
+    """Get the volume mounts for containers"""
+    return [{
+        'name': 'shared-volume',
+        'mountPath': '/shared'
+    }]
+
+
+
+---
+File: requirements-dev.txt
+---
+
+pytest==8.3.4
+kubernetes==23.3.0
+kopf==1.35.5
+
+
+
+---
+File: tests/integration/__init__.py
+---
+
+
+
+
+---
+File: tests/integration/conftest.py
+---
+
+import pytest
+from kubernetes import client, config
+import time
+
+@pytest.fixture
+def k8s_client():
+    # Load kube config
+    config.load_kube_config()
+    return client.CustomObjectsApi()
+
+@pytest.fixture
+def k8s_core_client():
+    # Load kube config
+    config.load_kube_config()
+    return client.CoreV1Api()
+
+# In conftest.py
+
+@pytest.fixture
+def create_agent_resource(k8s_client, delete_agent_resource):
+    def _create_agent(name, image, sidecar=None):
+        # First try to delete the resource if it exists
+        delete_agent_resource(name=name, namespace="default")
+        
+        # Create the agent spec
+        agent = {
+            "apiVersion": "agents.example.com/v1",
+            "kind": "AgentType",
+            "metadata": {"name": name},
+            "spec": {
+                "agent": {
+                    "name": "agent",
+                    "image": image
+                }
+            }
+        }
+        
+        # Add sidecar configuration if provided
+        if sidecar:
+            # Ensure sidecar is added at the spec level, not under agent
+            agent["spec"]["sidecar"] = sidecar
+        
+        print(f"Creating AgentType with spec: {agent}")  # Debug output
+        
+        try:
+            # Create the custom resource
+            response = k8s_client.create_namespaced_custom_object(
+                group="agents.example.com",
+                version="v1",
+                namespace="default",
+                plural="agenttypes",
+                body=agent
+            )
+            print(f"Created AgentType response: {response}")  # Debug output
+            time.sleep(5)  # Wait for operator to process
+            return agent
+        except Exception as e:
+            print(f"Failed to create agent: {str(e)}")
+            raise
+    
+    return _create_agent
+
+@pytest.fixture
+def delete_agent_resource(k8s_core_client, k8s_client):
+    def _delete_agent(name, namespace="default"):
+        try:
+            # Delete the AgentType resource
+            k8s_client.delete_namespaced_custom_object(
+                group="agents.example.com",
+                version="v1",
+                namespace=namespace,
+                plural="agenttypes",
+                name=name
+            )
+            
+            # Wait for pod deletion with a more robust check
+            max_retries = 30
+            retry_interval = 1
+            for _ in range(max_retries):
+                try:
+                    k8s_core_client.read_namespaced_pod(
+                        name=f"{name}-pod",
+                        namespace=namespace
+                    )
+                    time.sleep(retry_interval)
+                except client.exceptions.ApiException as e:
+                    if e.status == 404:  # Pod is gone
+                        return
+                    raise
+            
+            raise Exception("Timeout while waiting for pod deletion")
+            
+        except client.exceptions.ApiException as e:
+            if e.status != 404:  # Ignore 404 errors
+                raise
+
+    return _delete_agent
+
+
+---
+File: tests/integration/test_basic_agent.py
+---
+
+import pytest
+from kubernetes import client
+import time
+import json
+
+
+def test_create_basic_agent(k8s_core_client, create_agent_resource, delete_agent_resource):
+    """
+    Test Scenario 1: Should create a basic agent pod
+    """
+    agent_name = "test-agent-create"
+    agent_image = "nginx:latest"
+
+    # Create AgentType resource
+    agent_data = create_agent_resource(name=agent_name, image=agent_image)
+
+    # Verify pod exists and is running
+    pod = k8s_core_client.read_namespaced_pod(
+        name=f"{agent_name}-pod",
+        namespace="default"
+    )
+
+    assert pod.metadata.labels['app'] == agent_name
+    assert pod.status.phase in ['Running', 'Pending']
+    assert pod.metadata.owner_references[0].kind == 'AgentType'
+    assert pod.metadata.owner_references[0].name == agent_name
+
+    # Cleanup
+    delete_agent_resource(name=agent_name)
+
+def test_delete_agent(k8s_core_client, create_agent_resource, delete_agent_resource):
+    """
+    Test Scenario 2: Should clean up resources when agent is deleted
+    """
+    agent_name = "test-agent-delete"
+    agent_image = "nginx:latest"
+
+    # Create AgentType resource
+    create_agent_resource(name=agent_name, image=agent_image)
+
+    # Verify pod exists
+    pod = k8s_core_client.read_namespaced_pod(
+        name=f"{agent_name}-pod",
+        namespace="default"
+    )
+    assert pod is not None
+
+    # Delete AgentType, this will also delete pod via garbage collection, and we wait in fixture
+    delete_agent_resource(name=agent_name)
+    # Verify pod is removed
+    with pytest.raises(client.exceptions.ApiException, match="Not Found"):
+        k8s_core_client.read_namespaced_pod(
+            name=f"{agent_name}-pod",
+            namespace="default"
+        )
+    
+def test_invalid_configuration(k8s_core_client, create_agent_resource, delete_agent_resource):
+    """
+    Test Scenario 3: Should handle missing image properly
+    """
+    agent_name = "test-agent-invalid"
+    
+    with pytest.raises(client.exceptions.ApiException) as excinfo:
+        create_agent_resource(name=agent_name, image=None)
+    
+    
+    assert "Required value" in json.loads(excinfo.value.body)['message']
+    
+    # Verify no pod is created
+    with pytest.raises(client.exceptions.ApiException, match="Not Found"):
+      k8s_core_client.read_namespaced_pod(
+        name=f"{agent_name}-pod",
+        namespace="default"
+    )
+      
+def test_volume_creation(k8s_core_client, create_agent_resource, delete_agent_resource):
+    """
+    Test Scenario 4: Should create shared volume
+    """
+    agent_name = "test-volume-create"
+    agent_image = "nginx:latest"
+    volume_name = "shared-volume"
+
+    # Create AgentType resource with volume
+    agent_data = create_agent_resource(name=agent_name, image=agent_image)
+    
+    # Verify pod exists and has volume
+    pod = k8s_core_client.read_namespaced_pod(
+        name=f"{agent_name}-pod",
+        namespace="default"
+    )
+    
+    assert any(volume.name == volume_name for volume in pod.spec.volumes)
+    assert any(volume_mount.name == volume_name for container in pod.spec.containers for volume_mount in container.volume_mounts)
+
+    # Cleanup
+    delete_agent_resource(name=agent_name)
+
+def test_init_container_execution(k8s_core_client, create_agent_resource, delete_agent_resource):
+    """
+    Test Scenario 5: Should execute init container before main container
+    """
+    agent_name = "test-init-container"
+    agent_image = "nginx:latest"
+
+    # Create AgentType resource with init container
+    agent_data = create_agent_resource(name=agent_name, image=agent_image)
+
+    # Wait a bit longer for init container to complete
+    time.sleep(10)  # Increased wait time
+    
+    # Verify pod exists and has init container
+    pod = k8s_core_client.read_namespaced_pod(
+        name=f"{agent_name}-pod",
+        namespace="default"
+    )
+    
+    # Check init container status
+    init_container_statuses = pod.status.init_container_statuses or []
+    assert len(init_container_statuses) > 0, "No init containers found"
+    assert any(status.state.terminated and status.state.terminated.exit_code == 0 
+              for status in init_container_statuses), "Init container did not complete successfully"
+
+    # Cleanup
+    delete_agent_resource(name=agent_name)
+
+def test_wrapper_injection(k8s_core_client, create_agent_resource, delete_agent_resource):
+    """
+    Test Scenario 6: Should inject wrapper code via init container
+    """
+    agent_name = "test-wrapper-injection"
+    agent_image = "nginx:latest"
+
+    # Create AgentType resource with init container
+    agent_data = create_agent_resource(name=agent_name, image=agent_image)
+
+    # Wait a bit longer for init container to complete
+    time.sleep(10)  # Increased wait time
+    
+    # Verify pod exists and has init container
+    pod = k8s_core_client.read_namespaced_pod(
+        name=f"{agent_name}-pod",
+        namespace="default"
+    )
+    
+    # Check init container status
+    init_container_statuses = pod.status.init_container_statuses or []
+    assert len(init_container_statuses) > 0, "No init containers found"
+    assert any(status.state.terminated and status.state.terminated.exit_code == 0 
+              for status in init_container_statuses), "Init container did not complete successfully"
+
+    # Cleanup
+    delete_agent_resource(name=agent_name)
+
+def test_container_lifecycle(k8s_core_client, create_agent_resource, delete_agent_resource):
+    """
+    Test Scenario 7: Should clean up resources when agent is deleted
+    """
+    agent_name = "test-container-lifecycle"
+    agent_image = "nginx:latest"
+
+    # Create AgentType resource
+    create_agent_resource(name=agent_name, image=agent_image)
+
+    # Verify pod exists
+    pod = k8s_core_client.read_namespaced_pod(
+        name=f"{agent_name}-pod",
+        namespace="default"
+    )
+    assert pod is not None
+
+    # Delete AgentType, this will also delete pod via garbage collection, and we wait in fixture
+    delete_agent_resource(name=agent_name)
+
+    # Verify pod is removed
+    with pytest.raises(client.exceptions.ApiException, match="Not Found"):
+        k8s_core_client.read_namespaced_pod(
+            name=f"{agent_name}-pod",
+            namespace="default"
+        )
+
+
+---
+File: tests/integration/test_environment.py
+---
+
+import pytest
+from kubernetes import client
+import time
+
+def test_environment_variables(k8s_core_client, create_agent_resource, delete_agent_resource):
+    """Test environment variables injection"""
+    agent_name = "test-env-vars"
+    agent_image = "nginx:latest"
+    test_vars = [
+        {'name': 'TEST_VAR', 'value': 'test_value'},
+        {'name': 'ANOTHER_VAR', 'value': 'another_value'}
+    ]
+
+    # Create AgentType with environment variables
+    agent_data = create_agent_resource(
+        name=agent_name,
+        image=agent_image,
+        environment={
+            'variables': test_vars
+        }
+    )
+
+    # Wait for pod to be ready
+    time.sleep(5)
+
+    # Get pod and verify environment variables
+    pod = k8s_core_client.read_namespaced_pod(
+        name=f"{agent_name}-pod",
+        namespace="default"
+    )
+
+    # Debug output
+    print(f"Pod spec: {pod.spec}")
+    print(f"Container env: {pod.spec.containers[0].env}")
+
+    # Check environment variables in main container
+    container = pod.spec.containers[0]
+    env_vars = {env.name: env.value for env in container.env} if container.env else {}
+
+    # Verify each expected variable
+    for var in test_vars:
+        assert env_vars.get(var['name']) == var['value'], f"Environment variable {var['name']} not set correctly"
+    
+    # Cleanup
+    delete_agent_resource(name=agent_name)
+
+def test_sdk_installation(k8s_core_client, create_agent_resource, delete_agent_resource):
+    """Test SDK installation in init container"""
+    agent_name = "test-sdk-install"
+    agent_image = "python:3.9-slim"
+    
+    # Create AgentType with SDK requirements
+    agent_data = create_agent_resource(
+        name=agent_name,
+        image=agent_image,
+        environment={
+            'sdk': {
+                'runtime': 'python',
+                'version': '3.9',
+                'packages': ['requests', 'pandas']
+            }
+        }
+    )
+
+    # Wait for pod to be ready
+    time.sleep(5)
+    
+    # Get pod and verify init container completed
+    pod = k8s_core_client.read_namespaced_pod(
+        name=f"{agent_name}-pod",
+        namespace="default"
+    )
+    
+    # Verify init container status
+    init_container_statuses = pod.status.init_container_statuses or []
+    assert any(status.state.terminated and status.state.terminated.exit_code == 0 
+              for status in init_container_statuses)
+    
+    # Cleanup
+    delete_agent_resource(name=agent_name) 
+
+
+---
+File: tests/integration/test_sidecar_container.py
+---
+
+import pytest
+from kubernetes import client
+import time
+
+# In tests/integration/test_sidecar_container.py
+
+def test_sidecar_container_creation(k8s_core_client, create_agent_resource, delete_agent_resource):
+    """Test basic sidecar container creation"""
+    try:
+        # Create AgentType with sidecar spec
+        agent_data = create_agent_resource(
+            name="test-sidecar",
+            image="nginx:latest",
+            sidecar={
+                "name": "tool-manager",
+                "image": "busybox:latest"
+            }
+        )
+
+        # Wait for pod creation
+        time.sleep(5)
+
+        # Get the pod
+        pod = k8s_core_client.list_namespaced_pod(
+            namespace="default",
+            label_selector=f"app=test-sidecar"
+        ).items[0]
+
+        # Debug output
+        print(f"Pod spec: {pod.spec}")
+        print(f"Container names: {[c.name for c in pod.spec.containers]}")
+
+        # Verify sidecar container exists
+        containers = [container.name for container in pod.spec.containers]
+        assert "tool-manager" in containers
+        assert "agent" in containers  # Main container should also exist
+    finally:
+        # Cleanup
+        delete_agent_resource(name="test-sidecar")
+
+def test_sidecar_with_command(k8s_core_client, create_agent_resource, delete_agent_resource):
+    """Test sidecar container with custom command and args"""
+    try:
+        agent_data = create_agent_resource(
+            name="test-sidecar-cmd",
+            image="nginx:latest",
+            sidecar={
+                "name": "tool-manager",
+                "image": "busybox:latest",
+                "command": ["sh"],
+                "args": ["-c", "echo 'Starting sidecar' && while true; do sleep 30; done"]
+            }
+        )
+
+        # Allow more time for pod to be fully created
+        time.sleep(10)
+
+        # Get pod
+        pod = k8s_core_client.read_namespaced_pod(
+            name=f"test-sidecar-cmd-pod",
+            namespace="default"
+        )
+
+        # Debug output
+        print(f"Pod containers: {[c.name for c in pod.spec.containers]}")
+
+        # Find sidecar container
+        sidecar = next(c for c in pod.spec.containers if c.name == "tool-manager")
+        
+        # Verify command and args
+        assert sidecar.command == ["sh"]
+        assert sidecar.args == ["-c", "echo 'Starting sidecar' && while true; do sleep 30; done"]
+    finally:
+        delete_agent_resource(name="test-sidecar-cmd")
+
+def test_sidecar_resources(k8s_core_client, create_agent_resource, delete_agent_resource):
+    """Test sidecar container with resource requests/limits"""
+    agent_data = create_agent_resource(
+        name="test-sidecar-resources",
+        image="nginx:latest",
+        sidecar={
+            "name": "tool-manager",
+            "image": "busybox:latest",
+            "resources": {
+                "requests": {
+                    "memory": "64Mi",
+                    "cpu": "250m"
+                },
+                "limits": {
+                    "memory": "128Mi",
+                    "cpu": "500m"
+                }
+            }
+        }
+    )
+
+    time.sleep(5)
+    pod = k8s_core_client.read_namespaced_pod(
+        name=f"test-sidecar-resources-pod",
+        namespace="default"
+    )
+
+    # Verify resources
+    sidecar = next(c for c in pod.spec.containers if c.name == "tool-manager")
+    assert sidecar.resources.requests['memory'] == '64Mi'
+    assert sidecar.resources.requests['cpu'] == '250m'
+    assert sidecar.resources.limits['memory'] == '128Mi'
+    assert sidecar.resources.limits['cpu'] == '500m'
+
+    delete_agent_resource(name="test-sidecar-resources")
+
+def test_shared_volume_file_access(k8s_core_client, create_agent_resource, delete_agent_resource):
+    """Test file sharing between init container, sidecar, and main container"""
+    agent_data = create_agent_resource(
+        name="test-file-sharing",
+        image="nginx:latest",
+        sidecar={
+            "name": "tool-manager",
+            "image": "busybox:latest",
+            "command": ["sh", "-c"],
+            "args": ["while true; do if [ -f /shared/init.txt ]; then echo 'sidecar-ready' > /shared/sidecar.txt; fi; sleep 5; done"]
+        }
+    )
+
+    time.sleep(5)
+    pod = k8s_core_client.read_namespaced_pod(
+        name=f"test-file-sharing-pod",
+        namespace="default"
+    )
+
+    # Verify volume mounts
+    sidecar = next(c for c in pod.spec.containers if c.name == "tool-manager")
+    agent = next(c for c in pod.spec.containers if c.name == "agent")
+    
+    assert any(vm.name == "shared-volume" for vm in sidecar.volume_mounts)
+    assert any(vm.name == "shared-volume" for vm in agent.volume_mounts)
+
+    delete_agent_resource(name="test-file-sharing")
+
+def test_startup_order(k8s_core_client, create_agent_resource, delete_agent_resource):
+    """Test proper startup order: init -> sidecar -> main"""
+    agent_data = create_agent_resource(
+        name="test-startup-order",
+        image="nginx:latest",
+        sidecar={
+            "name": "tool-manager",
+            "image": "busybox:latest",
+            "command": ["sh", "-c"],
+            "args": ["echo 'Sidecar starting' && sleep infinity"]
+        }
+    )
+
+    time.sleep(5)
+    pod = k8s_core_client.read_namespaced_pod(
+        name=f"test-startup-order-pod",
+        namespace="default"
+    )
+
+    # Verify container statuses and order
+    assert pod.status.init_container_statuses[0].ready
+    assert pod.status.container_statuses[1].ready  # sidecar
+    assert pod.status.container_statuses[0].ready  # main container
+
+    delete_agent_resource(name="test-startup-order") 

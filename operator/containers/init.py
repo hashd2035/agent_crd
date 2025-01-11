@@ -1,4 +1,4 @@
-from ..utils.volume import get_volume_mounts
+from utils.volume import get_volume_mounts
 
 def create_init_container():
     """Create the init container configuration"""

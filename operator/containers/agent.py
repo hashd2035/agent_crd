@@ -1,4 +1,4 @@
-from ..utils.volume import get_volume_mounts
+from utils.volume import get_volume_mounts
 
 def create_agent_container(image, env_vars=None):
     """Create the main agent container configuration"""

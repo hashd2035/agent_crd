@@ -30,46 +30,97 @@ spec:
                   properties:
                     image:
                       type: string
+                      description: "Docker image for the main agent container."
                     name:
                       type: string
                       default: "agent"
+                      description: "Name of the main agent container"
                     environment:
                       type: object
+                      description: "Environment configuration for the agent"
                       properties:
                         variables:
                           type: array
+                          description: "List of environment variables"
                           items:
                             type: object
                             required: ["name", "value"]
                             properties:
                               name:
                                 type: string
+                                description: "Name of the environment variable"
                               value:
                                 type: string
-                        sdk:
+                                description: "Value of the environment variable"
+                sidecar:
+                  type: object
+                  description: "Configuration for the sidecar container"
+                  properties:
+                    name:
+                      type: string
+                      default: "tool-manager"
+                      description: "Name of the sidecar container"
+                    image:
+                      type: string
+                      description: "Docker image for the sidecar container"
+                    command:
+                      type: array
+                      description: "Command to run in the sidecar container"
+                      items:
+                        type: string
+                    args:
+                      type: array
+                      description: "Arguments for the sidecar command"
+                      items:
+                        type: string
+                    resources:
+                      type: object
+                      description: "Resource requirements for the sidecar"
+                      properties:
+                        requests:
                           type: object
                           properties:
-                            runtime:
+                            cpu:
                               type: string
-                              enum: ["python", "nodejs"]
-                            version:
+                              pattern: '^([0-9]+m?|[0-9]+\\.[0-9]+)$'
+                            memory:
                               type: string
-                            packages:
-                              type: array
-                              items:
-                                type: string
-                        glueCode:
+                              pattern: '^[0-9]+(Gi|Mi|Ki|G|M|K)?$'
+                        limits:
                           type: object
                           properties:
-                            source:
+                            cpu:
                               type: string
+                              pattern: '^([0-9]+m?|[0-9]+\\.[0-9]+)$'
+                            memory:
+                              type: string
+                              pattern: '^[0-9]+(Gi|Mi|Ki|G|M|K)?$'
             status:
               type: object
               properties:
                 phase:
                   type: string
+                  description: "Current phase of the agent"
                 message:
                   type: string
+                  description: "Detailed status message"
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required: ["type", "status"]
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
       additionalPrinterColumns:
         - name: Status
           type: string

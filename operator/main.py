@@ -5,84 +5,56 @@ import datetime
 from datetime import timezone
 import logging
 import json
-from kubernetes.client import V1Pod, V1PodSpec, V1Container, V1Volume, V1VolumeMount
+from kubernetes.client import V1Pod
+from utils.volume import get_volume_mounts
+from containers.agent import create_agent_container
+from containers.sidecar import create_sidecar_from_spec, validate_sidecar_spec
+from containers.init import create_init_container
 
 @kopf.on.create('agents.example.com', 'v1', 'agenttypes')
 def create_agent(spec, name, namespace, logger, body, **kwargs):
     """Create a pod when an AgentType resource is created"""
     api = client.CoreV1Api()
-    custom_api = client.CustomObjectsApi()
     
     logger.setLevel(logging.DEBUG)
-
-    isItString = datetime.datetime.utcnow().isoformat()
-    logger.info(f"is it a string? {isItString} {isinstance(isItString, str)}")
     
-    def set_status(phase, reason=None, message=None, status_type="Created"):
-        conditions = [{
-            'type': status_type,
-            'status': phase,
-            'lastTransitionTime': datetime.datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-            'reason': reason,
-            'message': message
-        }]
-        try:
-            custom_api.patch_namespaced_custom_object_status(
-                group="agents.example.com",
-                version="v1",
-                name=name,
-                namespace=namespace,
-                plural="agenttypes",
-                body={'status': {'conditions': conditions}},
-                field_manager='kopf'
-            )
-        except ApiException as e:
-            logger.error(f"Error updating status: {e}")
-    
-    def create_event(event_type, reason, message):
-        if event_type == 'Normal':
-            logger.info(f"Event: {reason} - {message}")
-        elif event_type == 'Warning':
-            logger.warning(f"Event: {reason} - {message}")
-        elif event_type == 'Error':
-            logger.error(f"Event: {reason} - {message}")
-    
-    settings = kopf.OperatorSettings()
-    settings.persistence.progress_storage = kopf.StatusProgressStorage(field='status.conditions')
-
-
     try:
-        # Add immediate debug log to track process start
-        logger.info("Starting pod creation handler")
+        # Log the full incoming resource
+        logger.info(f"Received AgentType resource creation request:")
+        logger.info(f"Name: {name}")
+        logger.info(f"Namespace: {namespace}")
+        # logger.info(f"Full body: {json.dumps(body, indent=2)}") <- REMOVED
+        logger.info(f"Spec content: {spec}") # Changed this
         
+        # Extract specifications
         agent_spec = spec.get('agent', {})
-        image = agent_spec.get('image')
+        sidecar_spec = spec.get('sidecar')
         
-        # Debug log before init container creation
-        logger.info("Creating init containers")
+        logger.info(f"Extracted agent spec: {json.dumps(agent_spec, indent=2)}")
+        logger.info(f"Extracted sidecar spec: {json.dumps(sidecar_spec, indent=2) if sidecar_spec else 'No sidecar spec'}")
         
-        # Debug environment variables
-        env_vars = spec.get('agent', {}).get('environment', {}).get('variables', [])
-        logger.info(f"Environment variables from spec: {env_vars}")
-        logger.info(f"Full spec: {spec}")
-        logger.info(f"Agent spec: {spec.get('agent', {})}")
-        logger.info(f"Environment spec: {spec.get('agent', {}).get('environment', {})}")
-
-        # Create init containers using V1Container
-        init_containers = [
-            V1Container(
-                name='init-wrapper',
-                image='busybox:latest',
-                command=['sh', '-c'],
-                args=['echo \'console.log("wrapped");\' > /shared/wrapper.js'],
-                volume_mounts=[V1VolumeMount(
-                    name='shared-volume',
-                    mount_path='/shared'
-                )]
-            )
-        ]
-
-        # Create pod spec with all necessary configuration
+        # Create containers list starting with main agent
+        containers = [create_agent_container(
+            image=agent_spec['image'],
+            env_vars=agent_spec.get('environment', {}).get('variables', [])
+        )]
+        
+        logger.info("Created main agent container configuration")
+        
+        # Add sidecar if specified
+        if sidecar_spec:
+            logger.info(f"Processing sidecar configuration: {json.dumps(sidecar_spec, indent=2)}")
+            
+            try:
+                validate_sidecar_spec(sidecar_spec)
+                sidecar = create_sidecar_from_spec(sidecar_spec)
+                containers.append(sidecar)
+                logger.info(f"Added sidecar container: {json.dumps(sidecar, indent=2)}")
+            except ValueError as e:
+               logger.error(f"Invalid sidecar configuration: {str(e)}")
+               raise kopf.PermanentError(f"Failed to create sidecar container: {str(e)}")
+           
+        # Create pod configuration
         pod = {
             'apiVersion': 'v1',
             'kind': 'Pod',
@@ -107,56 +79,36 @@ def create_agent(spec, name, namespace, logger, body, **kwargs):
                     'name': 'shared-volume',
                     'emptyDir': {}
                 }],
-                'initContainers': [{
-                    'name': 'init-wrapper',
-                    'image': 'busybox:latest',
-                    'command': ['sh', '-c'],
-                    'args': ['echo \'console.log("wrapped");\' > /shared/wrapper.js'],
-                    'volumeMounts': [{
-                        'name': 'shared-volume',
-                        'mountPath': '/shared'
-                    }]
-                }],
-                'containers': [{
-                    'name': 'agent',
-                    'image': image,
-                    'volumeMounts': [{
-                        'name': 'shared-volume',
-                        'mountPath': '/shared'
-                    }],
-                    'env': [
-                        {
-                            'name': var['name'],
-                            'value': var['value']
-                        } for var in agent_spec.get('environment', {}).get('variables', [])
-                    ] if agent_spec.get('environment', {}).get('variables') else None
-                }]
+                'initContainers': [create_init_container()],
+                'containers': containers
             }
         }
         
-        # Create pod and capture response
+        logger.info(f"Created pod configuration: {json.dumps(pod, indent=2)}")
+        
+        # Create pod
         created_pod = api.create_namespaced_pod(
             namespace=namespace,
             body=pod
         )
         
-        # Keep all the useful debug logs
-        logger.info(f"Created pod {created_pod.metadata.name}")
-        logger.debug(f"Pod details:")
+        logger.info(f"Successfully created pod {created_pod.metadata.name}")
+        logger.debug("Pod details:")
         logger.debug(f"  Name: {created_pod.metadata.name}")
         logger.debug(f"  Namespace: {created_pod.metadata.namespace}")
         logger.debug(f"  Phase: {created_pod.status.phase if created_pod.status else 'Unknown'}")
+        logger.debug(f"  Containers: {[c.name for c in created_pod.spec.containers]}")
         
-        # Return a dict with string values only
         return {
-            'pod_name': str(created_pod.metadata.name),
-            'namespace': str(created_pod.metadata.namespace),
-            'uid': str(created_pod.metadata.uid),
+            'pod_name': created_pod.metadata.name,
+            'namespace': created_pod.metadata.namespace,
+            'uid': created_pod.metadata.uid,
             'status': 'created'
         }
 
     except Exception as e:
         logger.error(f"Error creating agent pod: {str(e)}")
+        logger.error(f"Error details:", exc_info=True)
         raise kopf.PermanentError(f"Failed to create agent pod: {str(e)}")
 
 def main():
